@@ -47,6 +47,12 @@ export interface RTSCamera {
   /** Direct setter for pivot if you have a precise spot to focus on. */
   setPivot(x: number, y: number, z?: number): void
   /**
+   * Read the current pivot — the ground point the camera orbits around, which
+   * is the centre of the view. Use this (not a frustum-corner average, which
+   * is biased toward the horizon) to place something "at the centre of view".
+   */
+  getPivot(): [number, number, number]
+  /**
    * Direct setter for camera-to-pivot distance. Clamped to the controller's
    * own zoom-range bounds. Useful for verification automation that needs to
    * zoom in on a specific feature without going through wheel input (which
@@ -258,6 +264,9 @@ export function createCamera(canvas: HTMLCanvasElement, viewerCamera: any): RTSC
       pivot[1] = y
       pivot[2] = z
       applyToViewer()
+    },
+    getPivot(): [number, number, number] {
+      return [pivot[0], pivot[1], pivot[2]]
     },
     setDistance(d: number) {
       if (!isFinite(d) || d <= 0) return

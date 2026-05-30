@@ -320,14 +320,10 @@
   // close itself.
   async function placeImportedModelOnMap(modelPath: string): Promise<boolean> {
     if (!status.loaded || !scene) return false
-    const corners = scene.getViewportFrustumCorners()
-    if (!corners || corners.length < 4) {
-      showToast('Could not find the centre of the view to place the model.', 'error')
-      return false
-    }
-    let cx = 0, cy = 0
-    for (const [x, y] of corners) { cx += x; cy += y }
-    cx /= corners.length; cy /= corners.length
+    // Centre of view = the camera's orbit pivot on the ground. (NOT a
+    // frustum-corner average — those project toward the horizon and bias the
+    // point far from where the user is actually looking.)
+    const [cx, cy] = scene.getCamera().getPivot()
     const stem = modelPath.replace(/\.(mdl|mdx)$/i, '')
     try {
       const doodads = await ListObjects('doodads')
@@ -338,8 +334,13 @@
       }
       const created = await CreateCustomObject('doodads', base, '')
       await SetObjectField('doodads', created.id, 'file', stem)
-      await CreateDoodad(created.id, cx, cy, 0, 0, 1, 0)
+      const cn = await CreateDoodad(created.id, cx, cy, 0, 0, 1, 0)
+      // Re-read + re-render so the new doodad type's model resolves and the
+      // instance is drawn.
       await reloadMap({ keepCamera: true })
+      // Select it with the move gizmo so it's ready to nudge into place.
+      setGizmoMode('move')
+      ingestSelection(await SetSelection([{ kind: 'doodad', id: cn }]))
       showToast('Placed the model at the centre of the view.', 'success')
       return true
     } catch (e) {
