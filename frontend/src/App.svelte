@@ -15,6 +15,7 @@
     WC3InstallStatus,
     ListObjects, CreateCustomObject, SetObjectField, CreateDoodad,
   } from '../wailsjs/go/main/App.js'
+  import { GetObject, type ObjectKind } from './object-editor-bindings'
   import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime.js'
   import type { main, unitsdoo } from '../wailsjs/go/models'
   import {
@@ -76,6 +77,14 @@
   let selectionItems: main.SelectionItemDTO[] = $state([])
   let primaryEntity: unitsdoo.Entity | null = $state(null)
   let primaryDoodad: main.DoodadDTO | null = $state(null)
+  // Type-level (Object Editor) detail for the primary selection's TYPE, so a
+  // curated subset (Name, Model File) is editable inline and a quick-link can
+  // jump straight to the full Object Editor for that type. Refreshed whenever
+  // the primary selection changes (see refreshPrimaryType).
+  let primaryType: main.UnitObjectDetail | null = $state(null)
+  let primaryTypeKind: ObjectKind | null = $state(null)
+  let typeNameEdit: string = $state('')
+  let typeModelEdit: string = $state('')
   // Persistent state errors only — currently just the scene-init-failed path
   // during onMount. Transient operational errors (Save/Open/Move/Reforged
   // toggle) go through showToast() so they auto-dismiss.
@@ -200,15 +209,80 @@
   // tree+field-table render off the DOM until it's actually wanted.
   let showObjectEditor: boolean = $state(false)
   let objectEditorInitialId: string | null = $state(null)
-  function openObjectEditor(id: string | null = null) {
+  let objectEditorInitialKind: ObjectKind = $state('units')
+  function openObjectEditor(id: string | null = null, kind: ObjectKind = 'units') {
     if (!status.loaded) return
     objectEditorInitialId = id
+    objectEditorInitialKind = kind
     showObjectEditor = true
   }
   function closeObjectEditor() {
     showObjectEditor = false
     objectEditorInitialId = null
   }
+
+  // --- Inline "Type" (Object Editor) fields for the primary selection ---
+  // The Properties panel surfaces a curated subset of the selected entity's
+  // TYPE-level object-editor fields (Name, Model File) for quick editing, plus
+  // a link into the full Object Editor. SLK column names: 'name', 'file'.
+  function typeFieldValue(col: string): string {
+    const f = (primaryType?.fields ?? []).find((x) => x.field === col)
+    return f?.value ?? ''
+  }
+  async function refreshPrimaryType() {
+    const tid = primaryDoodad?.type_id ?? primaryEntity?.TypeID ?? null
+    const kind: ObjectKind | null = primaryDoodad
+      ? 'doodads'
+      : primaryEntity
+        ? 'units'
+        : null
+    // No type-level fields for start locations (no object-editor row).
+    if (!tid || !kind || tid === 'sloc') {
+      primaryType = null
+      primaryTypeKind = null
+      return
+    }
+    primaryTypeKind = kind
+    try {
+      primaryType = await GetObject(kind, tid)
+    } catch {
+      primaryType = null
+    }
+  }
+  async function commitTypeField(col: 'name' | 'file', val: string) {
+    if (!primaryType || !primaryTypeKind) return
+    if (typeFieldValue(col) === val) return // no-op — don't churn history
+    try {
+      primaryType = await SetObjectField(primaryTypeKind, primaryType.id, col, val)
+      if (col === 'file') {
+        // Model changed — re-render so placed instances pick up the new model.
+        await reloadMap({ keepCamera: true })
+      } else {
+        // Name changed — refresh the panels/lists that show display names.
+        units = await ListUnits()
+        doodads = await ListDoodads()
+      }
+    } catch (e) {
+      showToast('Edit failed: ' + String(e), 'error')
+    }
+  }
+  function editTypeInObjectEditor() {
+    if (primaryType && primaryTypeKind) openObjectEditor(primaryType.id, primaryTypeKind)
+  }
+  // Refresh the type detail whenever the primary selection changes (covers both
+  // select and deselect — refreshPrimaryType clears when nothing is selected).
+  $effect(() => {
+    const _deps = [primaryDoodad, primaryEntity]
+    void _deps
+    void refreshPrimaryType()
+  })
+  // Reset the inline edit buffers when the selected type changes so the inputs
+  // reflect current values (reads primaryType via typeFieldValue → re-runs on
+  // change; never reads the buffers, so no feedback loop).
+  $effect(() => {
+    typeNameEdit = typeFieldValue('name')
+    typeModelEdit = typeFieldValue('file')
+  })
 
   // ----- Trigger Editor modal (Phase 1a: read-only) -----
   // Mount-on-demand mirroring Object Editor: the trigger tree + ECA detail
@@ -2294,6 +2368,32 @@
             </Accordion>
           {/if}
         {/if}
+        {#if primaryType}
+          <Accordion id="p:type" label="Type — Object Editor" open={isOpen('p:type', true)}
+                     onToggle={onSectionToggle}>
+            <dl class="props">
+              <dt>Type ID</dt>
+              <dd class="mono">{primaryType.id}{primaryType.is_custom ? ' · custom' : primaryType.is_edited ? ' · edited' : ''}</dd>
+              <dt>Name</dt>
+              <dd>
+                <input class="type-edit" type="text" bind:value={typeNameEdit}
+                       onblur={() => commitTypeField('name', typeNameEdit)}
+                       onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                       title="Type display name. Enter to commit." />
+              </dd>
+              <dt>Model</dt>
+              <dd>
+                <input class="type-edit mono" type="text" bind:value={typeModelEdit}
+                       onblur={() => commitTypeField('file', typeModelEdit)}
+                       onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                       title="Art - Model File (path stem, no .mdx). Enter to commit; the view reloads to show the new model." />
+              </dd>
+            </dl>
+            <button type="button" class="type-oe-link" onclick={editTypeInObjectEditor}>
+              Open in Object Editor →
+            </button>
+          </Accordion>
+        {/if}
         </div>
       </aside>
     </div>
@@ -2310,7 +2410,7 @@
   {/if}
 
   {#if showObjectEditor}
-    <ObjectEditor bind:open={showObjectEditor} initialId={objectEditorInitialId} {reforged} onClose={closeObjectEditor} />
+    <ObjectEditor bind:open={showObjectEditor} initialId={objectEditorInitialId} initialKind={objectEditorInitialKind} {reforged} onClose={closeObjectEditor} />
   {/if}
   {#if showTriggerEditor}
     <TriggerEditor bind:open={showTriggerEditor} initialId={triggerEditorInitialId} onClose={closeTriggerEditor} />
@@ -2520,4 +2620,20 @@
   .pos-edit input::-webkit-outer-spin-button {
     -webkit-appearance: none; margin: 0;
   }
+
+  /* Inline Type (Object Editor) field editors */
+  .type-edit {
+    width: 100%; box-sizing: border-box; padding: 2px 4px;
+    background: var(--background); color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 3px; font-size: 12px;
+  }
+  .type-edit.mono { font-family: 'Cascadia Mono', Consolas, monospace; }
+  .type-edit:focus { outline: none; border-color: var(--ring); }
+  .type-oe-link {
+    margin-top: 8px; width: 100%; padding: 4px 8px;
+    background: transparent; color: var(--primary);
+    border: 1px solid var(--border); border-radius: 4px;
+    font-size: 12px; cursor: pointer; text-align: center;
+  }
+  .type-oe-link:hover { background: var(--accent); }
 </style>
