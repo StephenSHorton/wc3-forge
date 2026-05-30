@@ -22,7 +22,12 @@
   import { Button } from '$lib/components/ui/button'
   import { Label } from '$lib/components/ui/label'
   import { Checkbox } from '$lib/components/ui/checkbox'
-  import { ConvertAndImportModel } from '../wailsjs/go/main/App.js'
+  import {
+    ConvertAndImportModel,
+    ListObjects,
+    SetObjectField,
+  } from '../wailsjs/go/main/App.js'
+  import type { main } from '../wailsjs/go/models'
   import AssetPreview from './AssetPreview.svelte'
   import { showToast } from './toast'
 
@@ -59,6 +64,70 @@
   let importedModelPath: string = $state('')
   let importedTexturePaths: string[] = $state([])
 
+  // ----- Assign to an object (optional) -----
+  // After a successful import, let the user point an existing unit / doodad /
+  // destructable's "Model File" at the freshly-imported .mdx, reusing the same
+  // App bindings the Object Editor uses. Units (umdl), doodads (dfil) and
+  // destructables (bfil) all expose the model under SLK column "file", so one
+  // SetObjectField(kind, id, "file", path) call covers all three.
+  type AssignKind = 'units' | 'doodads' | 'destructables'
+  let assignKind: AssignKind = $state('units')
+  let objectRows: main.UnitObjectListEntity[] = $state([])
+  let objectFilter: string = $state('')
+  let selectedObjId: string = $state('')
+  let assigning: boolean = $state(false)
+  let loadingObjects: boolean = $state(false)
+
+  // Filter the (possibly large) object list client-side; cap the rendered
+  // count so a 1000+-unit list stays responsive in the native <select>.
+  const filteredRows = $derived.by(() => {
+    const q = objectFilter.trim().toLowerCase()
+    const rows = q
+      ? objectRows.filter(
+          (r) =>
+            r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q),
+        )
+      : objectRows
+    return rows.slice(0, 500)
+  })
+
+  async function loadObjects() {
+    loadingObjects = true
+    selectedObjId = ''
+    try {
+      objectRows = await ListObjects(assignKind)
+    } catch (e) {
+      objectRows = []
+      showToast(`Failed to list ${assignKind}: ${String(e)}`, 'error')
+    } finally {
+      loadingObjects = false
+    }
+  }
+
+  async function onAssignKindChange() {
+    objectFilter = ''
+    await loadObjects()
+  }
+
+  async function doAssign() {
+    if (assigning || !selectedObjId || !importedModelPath) return
+    assigning = true
+    try {
+      await SetObjectField(assignKind, selectedObjId, 'file', importedModelPath)
+      const row = objectRows.find((r) => r.id === selectedObjId)
+      showToast(
+        `Assigned model to ${row?.name ?? selectedObjId} (${selectedObjId})`,
+        'success',
+      )
+      // Refresh assets/viewport so any placed instances repaint with the model.
+      await onImported?.()
+    } catch (e) {
+      showToast(`Assign failed: ${String(e)}`, 'error')
+    } finally {
+      assigning = false
+    }
+  }
+
   // Reset transient result state on each open so a prior import's preview /
   // hint doesn't linger when the dialog is reopened. Mirrors the
   // open-transition effect pattern used by SwapTilesetDialog.
@@ -68,6 +137,9 @@
       lastOpen = true
       importedModelPath = ''
       importedTexturePaths = []
+      objectRows = []
+      objectFilter = ''
+      selectedObjId = ''
     } else if (!open && lastOpen) {
       lastOpen = false
       onClose?.()
@@ -102,6 +174,8 @@
         showToast(w, 'warning')
       }
       showToast(`Imported ${result.modelPath}`, 'success')
+      // Populate the "assign to object" picker for the current kind.
+      void loadObjects()
       // Let the caller refresh assets so the new in-archive file resolves.
       await onImported?.()
     } catch (e) {
@@ -184,15 +258,73 @@
           <p class="text-xs text-muted-foreground">
             Imported as
             <code class="text-xs bg-muted px-1 py-0.5 rounded break-all">{importedModelPath}</code>.
-            To use it, open the <strong>Object Editor</strong>, select a unit /
-            doodad / destructable, and set its
-            <strong>Art - Model File</strong> field to this path.
+            {#if importedTexturePaths.length > 0}
+              ({importedTexturePaths.length} texture{importedTexturePaths.length === 1 ? '' : 's'} imported.)
+            {/if}
           </p>
-          {#if importedTexturePaths.length > 0}
+
+          <div class="flex flex-col gap-2 border-t pt-3 mt-1">
+            <h4 class="text-sm font-semibold">
+              Assign to an object
+              <span class="text-xs font-normal text-muted-foreground">(optional)</span>
+            </h4>
             <p class="text-xs text-muted-foreground">
-              Textures: {importedTexturePaths.length} file{importedTexturePaths.length === 1 ? '' : 's'} imported.
+              Point an existing unit / doodad / destructable's
+              <strong>Model File</strong> at this import. You can also do this
+              later in the <strong>Object Editor</strong>.
             </p>
-          {/if}
+
+            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center">
+              <Label for="assign-kind" class="shrink-0">Type</Label>
+              <select
+                id="assign-kind"
+                class="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                bind:value={assignKind}
+                onchange={onAssignKindChange}
+                disabled={assigning || loadingObjects}
+              >
+                <option value="units">Units</option>
+                <option value="doodads">Doodads</option>
+                <option value="destructables">Destructables</option>
+              </select>
+
+              <Label for="assign-filter" class="shrink-0">Find</Label>
+              <input
+                id="assign-filter"
+                type="text"
+                placeholder="filter by name or id…"
+                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                bind:value={objectFilter}
+                disabled={assigning}
+              />
+            </div>
+
+            <select
+              size="6"
+              class="w-full rounded-md border border-input bg-background px-1 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              bind:value={selectedObjId}
+              disabled={assigning || loadingObjects}
+            >
+              {#each filteredRows as r (r.kind + ':' + r.id)}
+                <option value={r.id}>
+                  {r.name}{r.is_custom ? ' (custom)' : ''} — {r.id}
+                </option>
+              {/each}
+            </select>
+
+            <div class="flex items-center gap-3">
+              <Button onclick={doAssign} disabled={assigning || !selectedObjId}>
+                {assigning ? 'Assigning…' : 'Assign model'}
+              </Button>
+              <span class="text-xs text-muted-foreground">
+                {#if loadingObjects}
+                  Loading…
+                {:else}
+                  {filteredRows.length} shown{objectRows.length > filteredRows.length ? ` of ${objectRows.length}` : ''}
+                {/if}
+              </span>
+            </div>
+          </div>
         </section>
       {/if}
     </div>
