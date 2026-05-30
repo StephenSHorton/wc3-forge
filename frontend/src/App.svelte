@@ -85,6 +85,21 @@
   let primaryTypeKind: ObjectKind | null = $state(null)
   let typeNameEdit: string = $state('')
   let typeModelEdit: string = $state('')
+  let typeCategoryEdit: string = $state('')
+  // Doodad category letter → label (Blizzard stock data; mirrors
+  // typeindex.go doodadCategoryKeys). Drives the inline category dropdown.
+  const DOODAD_CATEGORIES: { letter: string; label: string }[] = [
+    { letter: 'O', label: 'Props' },
+    { letter: 'E', label: 'Environment' },
+    { letter: 'D', label: 'Trees/Destructibles' },
+    { letter: 'S', label: 'Structures' },
+    { letter: 'B', label: 'Bridges/Ramps' },
+    { letter: 'W', label: 'Water' },
+    { letter: 'C', label: 'Cliff/Terrain' },
+    { letter: 'T', label: 'Terrain' },
+    { letter: 'P', label: 'Pathing Blockers' },
+    { letter: 'Z', label: 'Cinematic' },
+  ]
   // Persistent state errors only — currently just the scene-init-failed path
   // during onMount. Transient operational errors (Save/Open/Move/Reforged
   // toggle) go through showToast() so they auto-dismiss.
@@ -249,18 +264,19 @@
       primaryType = null
     }
   }
-  async function commitTypeField(col: 'name' | 'file', val: string) {
+  async function commitTypeField(col: 'name' | 'file' | 'category', val: string) {
     if (!primaryType || !primaryTypeKind) return
     if (typeFieldValue(col) === val) return // no-op — don't churn history
     try {
       primaryType = await SetObjectField(primaryTypeKind, primaryType.id, col, val)
-      if (col === 'file') {
-        // Model changed — re-render so placed instances pick up the new model.
-        await reloadMap({ keepCamera: true })
-      } else {
+      if (col === 'name') {
         // Name changed — refresh the panels/lists that show display names.
         units = await ListUnits()
         doodads = await ListDoodads()
+      } else {
+        // Model or category changed — reload so the view re-renders / the
+        // Explorer re-buckets under the new category.
+        await reloadMap({ keepCamera: true })
       }
     } catch (e) {
       showToast('Edit failed: ' + String(e), 'error')
@@ -282,6 +298,7 @@
   $effect(() => {
     typeNameEdit = typeFieldValue('name')
     typeModelEdit = typeFieldValue('file')
+    typeCategoryEdit = typeFieldValue('category')
   })
 
   // ----- Trigger Editor modal (Phase 1a: read-only) -----
@@ -392,21 +409,35 @@
   // stem (no .mdx) so both placeUnit (appends .mdx) and placeDoodad
   // (extension-aware) resolve it. Returns true on success so the dialog can
   // close itself.
-  async function placeImportedModelOnMap(modelPath: string): Promise<boolean> {
+  async function placeImportedModelOnMap(modelPath: string, name?: string): Promise<boolean> {
     if (!status.loaded || !scene) return false
     // Centre of view = the camera's orbit pivot on the ground. (NOT a
     // frustum-corner average — those project toward the horizon and bias the
     // point far from where the user is actually looking.)
     const [cx, cy] = scene.getCamera().getPivot()
     const stem = modelPath.replace(/\.(mdl|mdx)$/i, '')
+    const trimmedName = name?.trim() ?? ''
     try {
       const doodads = await ListObjects('doodads')
-      const base = doodads[0]?.id
+      // Prefer a prop-like base so the inherited fields (pathing/scale) are
+      // sensible; fall back to the first doodad. (ListObjects may report the
+      // category as a letter OR a resolved label, so match both.) Category is
+      // overridden to Props below regardless, so the import never lands under
+      // Cliff/Terrain.
+      const propLike = new Set([
+        'O', 'E', 'D',
+        'Props', 'Environment', 'Trees/Destructibles',
+      ])
+      const base =
+        doodads.find((d) => propLike.has(d.category))?.id ?? doodads[0]?.id
       if (!base) {
         showToast('No doodad type available to base the imported model on.', 'error')
         return false
       }
       const created = await CreateCustomObject('doodads', base, '')
+      // 'O' = Props — keeps the import out of the Cliff/Terrain bucket.
+      await SetObjectField('doodads', created.id, 'category', 'O')
+      if (trimmedName) await SetObjectField('doodads', created.id, 'name', trimmedName)
       await SetObjectField('doodads', created.id, 'file', stem)
       const cn = await CreateDoodad(created.id, cx, cy, 0, 0, 1, 0)
       // Re-read + re-render so the new doodad type's model resolves and the
@@ -415,7 +446,7 @@
       // Select it with the move gizmo so it's ready to nudge into place.
       setGizmoMode('move')
       ingestSelection(await SetSelection([{ kind: 'doodad', id: cn }]))
-      showToast('Placed the model at the centre of the view.', 'success')
+      showToast(`Placed “${trimmedName || stem}” at the centre of the view.`, 'success')
       return true
     } catch (e) {
       showToast('Place on map failed: ' + String(e), 'error')
@@ -2199,6 +2230,10 @@
                 <dt>Category</dt>           <dd>{doodadCategoryFor(d)}</dd>
               </dl>
             </div>
+            {#if primaryType}
+              <button type="button" class="oe-chip" onclick={editTypeInObjectEditor}
+                      title="Edit this type in the Object Editor">⤢ Object Editor</button>
+            {/if}
           </Accordion>
           <Accordion id="p:transform" label="Transform" open={isOpen('p:transform', true)}
                      onToggle={onSectionToggle}>
@@ -2284,6 +2319,10 @@
                 <dt>Player</dt>             <dd>{playerLabel(e.Player)}</dd>
               </dl>
             </div>
+            {#if primaryType}
+              <button type="button" class="oe-chip" onclick={editTypeInObjectEditor}
+                      title="Edit this type in the Object Editor">⤢ Object Editor</button>
+            {/if}
           </Accordion>
           <Accordion id="p:transform" label="Transform" open={isOpen('p:transform', true)}
                      onToggle={onSectionToggle}>
@@ -2369,7 +2408,7 @@
           {/if}
         {/if}
         {#if primaryType}
-          <Accordion id="p:type" label="Type — Object Editor" open={isOpen('p:type', true)}
+          <Accordion id="p:type" label="Type" open={isOpen('p:type', true)}
                      onToggle={onSectionToggle}>
             <dl class="props">
               <dt>Type ID</dt>
@@ -2388,10 +2427,19 @@
                        onkeydown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
                        title="Art - Model File (path stem, no .mdx). Enter to commit; the view reloads to show the new model." />
               </dd>
+              {#if primaryTypeKind === 'doodads'}
+                <dt>Category</dt>
+                <dd>
+                  <select class="type-edit" bind:value={typeCategoryEdit}
+                          onchange={() => commitTypeField('category', typeCategoryEdit)}
+                          title="Doodad category — change it from Cliff/Terrain to Props, etc.">
+                    {#each DOODAD_CATEGORIES as c (c.letter)}
+                      <option value={c.letter}>{c.label}</option>
+                    {/each}
+                  </select>
+                </dd>
+              {/if}
             </dl>
-            <button type="button" class="type-oe-link" onclick={editTypeInObjectEditor}>
-              Open in Object Editor →
-            </button>
           </Accordion>
         {/if}
         </div>
@@ -2629,11 +2677,12 @@
   }
   .type-edit.mono { font-family: 'Cascadia Mono', Consolas, monospace; }
   .type-edit:focus { outline: none; border-color: var(--ring); }
-  .type-oe-link {
-    margin-top: 8px; width: 100%; padding: 4px 8px;
-    background: transparent; color: var(--primary);
-    border: 1px solid var(--border); border-radius: 4px;
-    font-size: 12px; cursor: pointer; text-align: center;
+  /* Small "open in Object Editor" chip in the Identity section */
+  .oe-chip {
+    margin-top: 6px; padding: 2px 8px;
+    background: transparent; color: var(--muted-foreground);
+    border: 1px solid var(--border); border-radius: 999px;
+    font-size: 11px; cursor: pointer; line-height: 1.6;
   }
-  .type-oe-link:hover { background: var(--accent); }
+  .oe-chip:hover { background: var(--accent); color: var(--foreground); }
 </style>

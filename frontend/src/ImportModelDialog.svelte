@@ -47,10 +47,10 @@
     reforged?: boolean
     onClose?: () => void
     onImported?: () => void | Promise<void>
-    // Drop the imported model onto the map at the centre of the current view.
-    // Returns true on success (the dialog then closes). Provided by App.svelte,
-    // which owns the scene/camera.
-    onPlace?: (modelPath: string) => Promise<boolean>
+    // Drop the imported model onto the map at the centre of the current view,
+    // named `name`. Returns true on success (the dialog then closes). Provided
+    // by App.svelte, which owns the scene/camera.
+    onPlace?: (modelPath: string, name: string) => Promise<boolean>
   } = $props()
 
   // Conversion options. Defaults match the backend contract:
@@ -68,6 +68,10 @@
   // AssetPreview + the "how to use it" hint. Cleared when the dialog reopens.
   let importedModelPath: string = $state('')
   let importedTexturePaths: string[] = $state([])
+  // Name for the placed object. Auto-filled from the imported file's base name
+  // after import; the user can edit it before clicking Done. Used as the custom
+  // doodad's display name.
+  let placeName: string = $state('')
 
   // ----- Assign to an object (optional) -----
   // After a successful import, let the user point an existing unit / doodad /
@@ -142,6 +146,7 @@
       lastOpen = true
       importedModelPath = ''
       importedTexturePaths = []
+      placeName = ''
       objectRows = []
       objectFilter = ''
       selectedObjId = ''
@@ -174,6 +179,8 @@
       }
       importedModelPath = result.modelPath
       importedTexturePaths = result.texturePaths ?? []
+      // Default the name to the imported file's base name (no path, no .mdx).
+      placeName = result.modelPath.split(/[\\/]/).pop()?.replace(/\.(mdl|mdx)$/i, '') ?? 'model'
       // Surface each backend warning (non-fatal conversion notes) as a toast.
       for (const w of result.warnings ?? []) {
         showToast(w, 'warning')
@@ -197,7 +204,7 @@
     if (placing || !importedModelPath || !onPlace) return
     placing = true
     try {
-      const ok = await onPlace(importedModelPath)
+      const ok = await onPlace(importedModelPath, placeName)
       if (ok) open = false
     } finally {
       placing = false
@@ -286,6 +293,21 @@
             {#if importedTexturePaths.length > 0}
               ({importedTexturePaths.length} texture{importedTexturePaths.length === 1 ? '' : 's'} imported.)
             {/if}
+          </p>
+
+          <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center">
+            <Label for="place-name" class="shrink-0">Name</Label>
+            <input
+              id="place-name"
+              type="text"
+              class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              bind:value={placeName}
+              placeholder="model name"
+            />
+          </div>
+          <p class="text-xs text-muted-foreground -mt-1">
+            Used as the name of the placed object (a <strong>Props</strong>
+            doodad). "Done" drops it at the centre of your view.
           </p>
 
           <div class="flex flex-col gap-2 border-t pt-3 mt-1">
