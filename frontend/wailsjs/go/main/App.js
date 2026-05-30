@@ -90,6 +90,10 @@ export function CreateCustomUnit(arg1, arg2) {
   return window['go']['main']['App']['CreateCustomUnit'](arg1, arg2);
 }
 
+export function CreateDoodad(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['CreateDoodad'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
 export function DeleteCustomObject(arg1, arg2) {
   return window['go']['main']['App']['DeleteCustomObject'](arg1, arg2);
 }

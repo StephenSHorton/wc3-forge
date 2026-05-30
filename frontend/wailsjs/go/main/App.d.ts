@@ -50,6 +50,8 @@ export function CreateCustomObject(arg1:string,arg2:string,arg3:string):Promise<
 
 export function CreateCustomUnit(arg1:string,arg2:string):Promise<main.CreateCustomUnitResult>;
 
+export function CreateDoodad(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number,arg7:number):Promise<number>;
+
 export function DeleteCustomObject(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteCustomUnit(arg1:string):Promise<void>;

@@ -1346,6 +1346,16 @@ func (a *App) MoveDoodad(creationNumber uint32, x, y, z float32) error {
 	return forge.Current.MoveDoodad(creationNumber, x, y, z)
 }
 
+// CreateDoodad appends a new placed doodad of typeID at game coords (x,y,z)
+// and returns its creation_number. Used by the "Import 3D Model" dialog's
+// "Done" action to drop the freshly-imported model onto the map at the center
+// of the current view (doodads avoid the unitsdoo save round-trip hazard that
+// placing a unit would hit). Thin pass-through to the session mutator, which
+// records undo + fires dirty/entity-changed.
+func (a *App) CreateDoodad(typeID string, x, y, z, rotation, scale float32, variation uint32) (uint32, error) {
+	return forge.Current.CreateDoodad(typeID, [3]float32{x, y, z}, rotation, scale, variation)
+}
+
 // RotateUnit sets the facing angle (radians, Z-axis only) of the unit with the
 // given creation_number. The gizmo's rotate-handle commits via this method.
 // Mirrors MoveUnit's error-handling shape: no-op on same value, dirty-flip on

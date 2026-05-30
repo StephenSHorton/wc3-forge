@@ -41,11 +41,16 @@
     reforged = false,
     onClose,
     onImported,
+    onPlace,
   }: {
     open?: boolean
     reforged?: boolean
     onClose?: () => void
     onImported?: () => void | Promise<void>
+    // Drop the imported model onto the map at the centre of the current view.
+    // Returns true on success (the dialog then closes). Provided by App.svelte,
+    // which owns the scene/camera.
+    onPlace?: (modelPath: string) => Promise<boolean>
   } = $props()
 
   // Conversion options. Defaults match the backend contract:
@@ -182,6 +187,20 @@
       showToast('Import failed: ' + String(e), 'error')
     } finally {
       importing = false
+    }
+  }
+
+  // "Done" — hand the imported model to the host to drop on the map at the
+  // centre of the current view, then close on success.
+  let placing: boolean = $state(false)
+  async function doPlace() {
+    if (placing || !importedModelPath || !onPlace) return
+    placing = true
+    try {
+      const ok = await onPlace(importedModelPath)
+      if (ok) open = false
+    } finally {
+      placing = false
     }
   }
 
@@ -330,12 +349,21 @@
     </div>
 
     <Dialog.Footer class="px-4 py-3 border-t bg-muted/30 rounded-none mx-0 mb-0">
-      <Button variant="ghost" onclick={onCancel} disabled={importing}>
-        {importedModelPath ? 'Close' : 'Cancel'}
-      </Button>
-      <Button onclick={doImport} disabled={importing || !scaleValid}>
-        {importing ? 'Importing…' : importedModelPath ? 'Import another…' : 'Import…'}
-      </Button>
+      {#if importedModelPath}
+        <Button variant="ghost" onclick={onCancel} disabled={placing}>
+          Close
+        </Button>
+        <Button onclick={doPlace} disabled={placing || !onPlace}>
+          {placing ? 'Placing…' : 'Done — place at view'}
+        </Button>
+      {:else}
+        <Button variant="ghost" onclick={onCancel} disabled={importing}>
+          Cancel
+        </Button>
+        <Button onclick={doImport} disabled={importing || !scaleValid}>
+          {importing ? 'Importing…' : 'Import…'}
+        </Button>
+      {/if}
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

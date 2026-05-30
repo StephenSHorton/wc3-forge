@@ -13,6 +13,7 @@
     CheckConvertToLua,
     ForceQuit,
     WC3InstallStatus,
+    ListObjects, CreateCustomObject, SetObjectField, CreateDoodad,
   } from '../wailsjs/go/main/App.js'
   import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime.js'
   import type { main, unitsdoo } from '../wailsjs/go/models'
@@ -308,6 +309,43 @@
   }
   async function onModelImported() {
     if (status.loaded) await reloadMap({ keepCamera: true })
+  }
+  // "Done" action of the import dialog: drop the freshly-imported model onto
+  // the map at the centre of the current view. We auto-create a custom doodad
+  // type whose Model File is the import (cloning the first available doodad as
+  // a base) and place one instance at the view centroid. Doodads — not units —
+  // avoid the unitsdoo save round-trip hazard. The model path is stored as a
+  // stem (no .mdx) so both placeUnit (appends .mdx) and placeDoodad
+  // (extension-aware) resolve it. Returns true on success so the dialog can
+  // close itself.
+  async function placeImportedModelOnMap(modelPath: string): Promise<boolean> {
+    if (!status.loaded || !scene) return false
+    const corners = scene.getViewportFrustumCorners()
+    if (!corners || corners.length < 4) {
+      showToast('Could not find the centre of the view to place the model.', 'error')
+      return false
+    }
+    let cx = 0, cy = 0
+    for (const [x, y] of corners) { cx += x; cy += y }
+    cx /= corners.length; cy /= corners.length
+    const stem = modelPath.replace(/\.(mdl|mdx)$/i, '')
+    try {
+      const doodads = await ListObjects('doodads')
+      const base = doodads[0]?.id
+      if (!base) {
+        showToast('No doodad type available to base the imported model on.', 'error')
+        return false
+      }
+      const created = await CreateCustomObject('doodads', base, '')
+      await SetObjectField('doodads', created.id, 'file', stem)
+      await CreateDoodad(created.id, cx, cy, 0, 0, 1, 0)
+      await reloadMap({ keepCamera: true })
+      showToast('Placed the model at the centre of the view.', 'success')
+      return true
+    } catch (e) {
+      showToast('Place on map failed: ' + String(e), 'error')
+      return false
+    }
   }
 
   // ----- Gameplay Constants Editor modal -----
@@ -2290,6 +2328,7 @@
       {reforged}
       onClose={closeImportModel}
       onImported={onModelImported}
+      onPlace={placeImportedModelOnMap}
     />
   {/if}
 
