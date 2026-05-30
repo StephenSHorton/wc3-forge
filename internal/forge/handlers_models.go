@@ -82,6 +82,24 @@ func convertModel(path string, data []byte, scale float64, upAxis string, flipV 
 	if sc == 0 {
 		sc = 1
 	}
+	// Auto-fit. Raw model units are usually tiny in WC3's coordinate space (a
+	// unit/doodad is ~100+ studs across), so a scale-1 import of, say, a
+	// ±1-unit cube renders ~2 studs wide — present but invisibly small on the
+	// map. Normalize the model's largest source dimension to a doodad-ish
+	// target size; the user's Scale then multiplies that. A model already
+	// authored at WC3 size just gets a ~1x auto-fit factor. (maxDim is
+	// rotation-invariant, so computing it pre-Normalize is correct.)
+	const importTargetSize = 160.0
+	mn, mx := mesh.ComputeAABB()
+	maxDim := float32(0)
+	for i := 0; i < 3; i++ {
+		if d := mx[i] - mn[i]; d > maxDim {
+			maxDim = d
+		}
+	}
+	if maxDim > 0 {
+		sc *= importTargetSize / maxDim
+	}
 	axis := upAxis
 	if axis == "" {
 		axis = "y"

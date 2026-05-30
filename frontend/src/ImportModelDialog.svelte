@@ -266,6 +266,12 @@
         </label>
       </div>
 
+      <p class="text-xs text-muted-foreground">
+        The model is auto-fit to a sensible in-game size, so
+        <strong>Scale 1</strong> is a good default. Scale is a multiplier on top
+        of that (2 = twice as big).
+      </p>
+
       {#if !scaleValid}
         <p class="text-xs text-destructive">Scale must be a positive number.</p>
       {/if}
