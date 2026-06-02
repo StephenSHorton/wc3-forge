@@ -344,10 +344,9 @@
 <style>
   .region-fab {
     position: absolute;
-    /* Offset right of the doodad/terrain FABs (which both sit at left:12px in
-       their respective modes) so the always-present region launcher never
-       overlaps them. */
-    left: 60px;
+    /* Region mode owns the bottom-left corner — the doodad/terrain FABs only
+       render in their own modes now, so nothing else occupies this slot. */
+    left: 12px;
     bottom: 12px;
     z-index: 40;
     width: 40px;
@@ -371,7 +370,7 @@
 
   .region-panel {
     position: absolute;
-    left: 60px;
+    left: 12px;
     bottom: 60px;
     z-index: 40;
     width: 320px;
