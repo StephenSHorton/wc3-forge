@@ -364,7 +364,10 @@ func applyOverrides(u *MergedObject, ov w3objmod.Overrides, meta *ObjectMetadata
 	for fourCC, val := range ov {
 		col := fourCC
 		if m, ok := meta.ByID[fourCC]; ok {
-			col = strings.ToLower(m.Field)
+			// Shared columns (Spell Book spb1..spb5 all on "Data") key by
+			// FourCC so they don't collapse onto one slot; everything else
+			// keys by the lowercased column name as before.
+			col = meta.storeCol(fourCC, strings.ToLower(m.Field))
 		} else if !looksLikeFourCC(fourCC) {
 			col = strings.ToLower(fourCC)
 		}
@@ -389,7 +392,9 @@ func applyLevelOverrides(u *MergedObject, levels []w3objmod.LevelOverride, meta 
 	for _, lo := range levels {
 		col := lo.FourCC
 		if m, ok := meta.ByID[lo.FourCC]; ok {
-			col = strings.ToLower(m.Field)
+			// Same shared-column rule as applyOverrides so leveled fields that
+			// share a column (rare, but symmetric) don't collapse either.
+			col = meta.storeCol(lo.FourCC, strings.ToLower(m.Field))
 		} else if !looksLikeFourCC(lo.FourCC) {
 			col = strings.ToLower(lo.FourCC)
 		}

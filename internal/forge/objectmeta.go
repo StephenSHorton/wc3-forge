@@ -85,10 +85,36 @@ type UnitFieldMeta = ObjectFieldMeta
 type ObjectMetadata struct {
 	Fields []ObjectFieldMeta
 	ByID   map[string]*ObjectFieldMeta
+	// SharedCols is the set of lowercased SLK column names ("field") that are
+	// claimed by MORE THAN ONE FourCC in this kind's metadata. Spell Book
+	// abilities are the canonical case: spb1..spb5 (Spell List / Shared
+	// Cooldown / Min / Max / Base Order ID) are five DISTINCT FourCCs that all
+	// share Field="Data". Keying the merged read view by column name collapses
+	// them onto one slot (last write wins); the merge + get paths consult this
+	// set and key shared columns by FourCC instead so each lands in its own
+	// slot. Non-shared columns (name, hp, ...) stay column-name-keyed so the
+	// frontend's existing field vocabulary is byte-for-byte unchanged.
+	SharedCols map[string]bool
 }
 
 // UnitMetadata is the Phase-1b name retained as an alias of ObjectMetadata.
 type UnitMetadata = ObjectMetadata
+
+// storeCol resolves the map slot a field's value lives in within a
+// MergedObject's column-name-keyed Fields / Overridden / LevelFields maps.
+//
+// Default keying is the lowercased SLK column ("name", "hp"). For a SHARED
+// column — one claimed by multiple FourCCs (Spell Book spb1..spb5 all on
+// "Data") — we key by the lowercased FourCC instead so the distinct fields
+// don't collapse onto one slot. fourCC is the field's modification ID; col is
+// its already-lowercased Field column. Both applyOverrides (merge) and
+// getObject (read) call this so set + get + list + fields_meta agree.
+func (m *ObjectMetadata) storeCol(fourCC, col string) string {
+	if m != nil && m.SharedCols[col] {
+		return strings.ToLower(fourCC)
+	}
+	return col
+}
 
 // FieldMap builds the FourCC → column-name map w3objmod.Parse needs to
 // translate a war3map.w3* modification ID into SLK column-name space, so
@@ -189,6 +215,20 @@ func ParseObjectMetadata(data []byte) (*ObjectMetadata, error) {
 	// after construction).
 	for i := range out.Fields {
 		out.ByID[out.Fields[i].ID] = &out.Fields[i]
+	}
+	// Detect the shared columns once: count how many distinct FourCCs claim
+	// each lowercased column name; any column claimed by >1 FourCC is shared
+	// (e.g. "data" for Spell Book spb1..spb5). The merge + get read paths key
+	// these by FourCC instead of column name so the fields don't collapse.
+	colCount := make(map[string]int, len(out.Fields))
+	for i := range out.Fields {
+		colCount[strings.ToLower(out.Fields[i].Field)]++
+	}
+	out.SharedCols = map[string]bool{}
+	for col, n := range colCount {
+		if n > 1 {
+			out.SharedCols[col] = true
+		}
 	}
 	return out, nil
 }

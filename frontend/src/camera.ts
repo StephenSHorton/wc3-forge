@@ -344,7 +344,11 @@ export function createCamera(canvas: HTMLCanvasElement, viewerCamera: any): RTSC
     },
     setAspect(a: number) {
       if (!isFinite(a) || a <= 0) return
-      if (Math.abs(a - aspect) < 1e-3) return
+      // Skip only on EXACT equality. The old `< 1e-3` epsilon let the
+      // projection aspect lag the live gl.viewport during a slow console-resize
+      // drag (each step is sub-epsilon), distorting the frame. mat4.perspective
+      // is cheap, so re-derive on any real change.
+      if (a === aspect) return
       aspect = a
       applyToViewer()
     },

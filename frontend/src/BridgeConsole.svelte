@@ -255,7 +255,7 @@
 
 {#if open}
   <section
-    class="flex flex-col bg-card text-foreground border-t border-border text-xs min-h-[100px] overflow-hidden"
+    class="flex flex-none flex-col bg-card text-foreground border-t border-border text-xs min-h-[100px] overflow-hidden"
     style="height: {heightPx}px"
   >
     <!-- Drag handle: 4px-tall strip across the top of the panel. Visual

@@ -231,6 +231,12 @@ export function buildInstanceOutline(gl: WebGLRenderingContext): InstanceOutline
       gl.disable(gl.BLEND)
       gl.enable(gl.DEPTH_TEST)
       gl.depthMask(true)
+      // Restore the full-canvas viewport. Pass 2 set it to the mask size
+      // (texW×texH) when binding back to the canvas FBO; if the canvas is ever
+      // a different size than the mask (e.g. a resize between setSize and this
+      // pass), leaving it would clip subsequent passes. Reset to the live
+      // canvas dimensions so cell-highlight / gizmo draw across the whole frame.
+      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
     },
     dispose() {
       gl.deleteBuffer(quad)

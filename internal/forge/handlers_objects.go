@@ -372,13 +372,28 @@ func getObject(cfg *KindConfig, id string) (*objectsUnitsGetResult, error) {
 		if cfg.AppliesFn != nil && !cfg.AppliesFn(*f) {
 			continue
 		}
+		// `col` is the display/wire column name (lowercased Field), kept byte-
+		// identical for every field so the frontend's vocabulary is unchanged.
+		// `storeCol` is where the value actually lives in u.Fields: the same as
+		// `col` for normal fields, but the lowercased FourCC for SHARED columns
+		// (Spell Book spb1..spb5 all on "Data") so they don't read back collapsed.
 		col := strings.ToLower(f.Field)
-		val, has := u.Fields[col]
+		storeCol := meta.storeCol(f.ID, col)
+		val, has := u.Fields[storeCol]
+		// Fallback to the column-name slot when the FourCC slot is absent —
+		// shields against any path that stored a shared field by column name.
+		if !has && storeCol != col {
+			val, has = u.Fields[col]
+		}
 		if !has {
 			val = ""
 		}
 		var levels map[uint32]string
-		if lf := u.LevelFields[col]; len(lf) > 0 {
+		lf := u.LevelFields[storeCol]
+		if len(lf) == 0 && storeCol != col {
+			lf = u.LevelFields[col]
+		}
+		if len(lf) > 0 {
 			levels = make(map[uint32]string, len(lf))
 			for lvl, v := range lf {
 				levels[lvl] = v
@@ -393,7 +408,7 @@ func getObject(cfg *KindConfig, id string) (*objectsUnitsGetResult, error) {
 			Value:       val,
 			Display:     resolveDisplay(val, mapStrings),
 			DisplayRaw:  resolveDisplayKeepColors(val, mapStrings),
-			Overridden:  u.Overridden[col] || levels != nil,
+			Overridden:  u.Overridden[storeCol] || u.Overridden[col] || levels != nil,
 			Levels:      levels,
 		})
 	}
