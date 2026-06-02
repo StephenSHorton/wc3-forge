@@ -743,6 +743,16 @@ export interface SceneAPI {
    */
   setRegionOverlayVisible(visible: boolean): void
   /**
+   * Enter/exit region edit mode. While active the viewport owns region editing:
+   * drag = draw a new region rect, click = select the region under the cursor;
+   * entity selection + box-select are suppressed.
+   */
+  setRegionMode(active: boolean): void
+  /** Register the callback fired with world bounds when a region is drag-drawn. */
+  onRegionDraw(cb: (minX: number, minY: number, maxX: number, maxY: number) => void): void
+  /** Register the callback fired with the clicked region's creation_number (or null). */
+  onRegionPick(cb: (cn: number | null) => void): void
+  /**
    * Hide or show every doodad instance in a category. Pass "*" to affect
    * every doodad. Visibility is rendering-only — the underlying data is
    * unchanged, never persisted. Re-applied on every loadMap so hidden
@@ -1137,6 +1147,14 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
   // themselves are untouched. Driven by App.svelte's persisted "show regions"
   // preference (re-applied on every map load via setRegionOverlayVisible).
   let regionOverlayVisible = true
+  // Region edit mode: when on, the viewport is owned by region editing — a drag
+  // draws a new region rect (reusing the rubber-band overlay) and a click selects
+  // the region under the cursor; entity selection + box-select are suppressed.
+  // Callbacks + the rect snapshot (for click hit-testing) are set by App.svelte.
+  let regionMode = false
+  let regionDrawCallback: ((minX: number, minY: number, maxX: number, maxY: number) => void) | null = null
+  let regionPickCallback: ((cn: number | null) => void) | null = null
+  let regionRectsForPick: RegionRect[] = []
   try {
     regionOverlay = buildRegionOverlay((viewer as any).gl as WebGLRenderingContext)
   } catch (e) {
@@ -2504,6 +2522,21 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
       return
     }
 
+    // ── REGION MODE ───────────────────────────────────────────────────
+    // Region editing owns the viewport: skip the gizmo + entity-grab paths and
+    // just record downAt so the move handler can rubber-band (the draw preview)
+    // and the up handler can commit a region (drag) or select one (click).
+    if (regionMode) {
+      downAt = {
+        x: px, y: py,
+        clientX: e.clientX, clientY: e.clientY,
+        shift: false, ctrl: false,
+        rubberBanding: false,
+        dragMove: null,
+      }
+      return
+    }
+
     // ── GIZMO PRIORITY PICK (design §1.3) ─────────────────────────────
     // Check gizmo handle BEFORE entity selection / drag-to-move logic.
     // Shift is allowed through because it's a gizmo-side modifier (e.g.
@@ -2599,6 +2632,20 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     return { x, y, w, h }
   }
 
+  // Topmost region whose bounds contain the world point (smallest-area wins so a
+  // region nested inside another stays selectable), or null if none.
+  function pickRegionAt(wx: number, wy: number): number | null {
+    let best: number | null = null
+    let bestArea = Infinity
+    for (const r of regionRectsForPick) {
+      if (wx >= r.minX && wx <= r.maxX && wy >= r.minY && wy <= r.maxY) {
+        const area = (r.maxX - r.minX) * (r.maxY - r.minY)
+        if (area < bestArea) { bestArea = area; best = r.creationNumber }
+      }
+    }
+    return best
+  }
+
   // Document-level so we keep tracking the drag even if the cursor leaves
   // the canvas mid-gesture (rubber-band should survive a wobble over the
   // app chrome — matches what every other editor does).
@@ -2672,7 +2719,7 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     // ~60Hz — rubberBandPick walks every instance, and raw mousemove can fire
     // at 1000Hz; the box outline above still updates every event.
     const previewNow = performance.now()
-    if (rect && previewNow - lastRubberPreviewTs >= RUBBER_PREVIEW_MS) {
+    if (rect && !regionMode && previewNow - lastRubberPreviewTs >= RUBBER_PREVIEW_MS) {
       lastRubberPreviewTs = previewNow
       rubberPreviewUnits.clear()
       rubberPreviewDoodads.clear()
@@ -2759,6 +2806,19 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
       // when shift-dragging over nothing); for 'set', an empty rect clears
       // (matches click-on-empty), so dragging an empty box deselects.
       overlay.style.display = 'none'
+      if (regionMode) {
+        // Commit a drag-drawn region: world-space bounds from down → release.
+        const rb = canvas.getBoundingClientRect()
+        const a = groundPlaneXY(d.x, d.y)
+        const b = groundPlaneXY(e.clientX - rb.left, e.clientY - rb.top)
+        if (a && b && regionDrawCallback) {
+          const minX = Math.min(a[0], b[0]), maxX = Math.max(a[0], b[0])
+          const minY = Math.min(a[1], b[1]), maxY = Math.max(a[1], b[1])
+          // Ignore a degenerate (tiny) drag so a near-click doesn't make a sliver.
+          if (maxX - minX > 8 && maxY - minY > 8) regionDrawCallback(minX, minY, maxX, maxY)
+        }
+        return
+      }
       // Compute the rect from the CAPTURED down-state `d` — `downAt` was nulled
       // at the top of this handler, and currentRubberRect() reads `downAt`, so
       // calling it here would always return null (the bug that made box-select
@@ -2796,6 +2856,13 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     // the canvas counts as a click iff it ended close to where it started.
     const dist = Math.hypot(e.clientX - d.clientX, e.clientY - d.clientY)
     if (dist > CLICK_PIXEL_THRESHOLD) return
+
+    // Region mode: a plain click selects the region under the cursor (or clears).
+    if (regionMode) {
+      const w = groundPlaneXY(d.x, d.y)
+      regionPickCallback?.(w ? pickRegionAt(w[0], w[1]) : null)
+      return
+    }
 
     // Doodad-placement mode takes over plain clicks BEFORE terrain-pick.
     // We pick the terrain cell (for the ground intersection), sample the
@@ -2866,6 +2933,12 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     // who hits Escape exits placement rather than wiping their selection.
     if (placementMode) {
       placementCallback?.(null)
+      return
+    }
+    // Region mode Escape: cancel an in-progress draw, else clear the selection.
+    if (regionMode) {
+      if (downAt) { downAt = null; overlay.style.display = 'none' }
+      else regionPickCallback?.(null)
       return
     }
     // Mid-drag Escape: cancel any active drag without committing.
@@ -4009,7 +4082,7 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
           terrainBrushCallback?.(null, 'end')
         }
         brushCursor?.setBrush(null)
-        if (!terrainPickMode && !placementMode) canvas.style.cursor = ''
+        if (!terrainPickMode && !placementMode && !regionMode) canvas.style.cursor = ''
       }
     },
     isTerrainBrushMode() { return terrainBrushMode },
@@ -4077,6 +4150,7 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
       cellHighlight?.setCell(cell)
     },
     setRegionOverlay(regions: RegionRect[]) {
+      regionRectsForPick = regions
       regionOverlay?.setRegions(regions)
     },
     setSelectedRegion(creationNumber: number | null) {
@@ -4085,6 +4159,12 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     setRegionOverlayVisible(visible: boolean) {
       regionOverlayVisible = visible
     },
+    setRegionMode(active: boolean) {
+      regionMode = active
+      canvas.style.cursor = active ? 'crosshair' : ''
+    },
+    onRegionDraw(cb) { regionDrawCallback = cb },
+    onRegionPick(cb) { regionPickCallback = cb },
     setDoodadCategoryVisible(category: string, visible: boolean) {
       // "*" affects every category. Walk the per-instance category map and
       // flip visibility via show()/hide() — see SceneAPI doc comment for

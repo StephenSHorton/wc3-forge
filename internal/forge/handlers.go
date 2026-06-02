@@ -1323,11 +1323,11 @@ var _ = unitsdoo.File{}
 // command through the wc3-forge:test-command bus; the JS handler SETS the state
 // (not toggles), so idempotency holds regardless of the current state.
 //
-// `mode` is required ("terrain" or "doodad"). The resulting mode is recorded on
-// the session (read back by view.get_mode) and echoed in the response so an
-// agent can confirm the call landed without a follow-up query.
+// `mode` is required ("doodad", "terrain", or "region"). The resulting mode is
+// recorded on the session (read back by view.get_mode) and echoed in the
+// response so an agent can confirm the call landed without a follow-up query.
 type viewSetModeParams struct {
-	Mode string `json:"mode"` // "terrain" | "doodad" — the explicit target mode (required)
+	Mode string `json:"mode"` // "doodad" | "terrain" | "region" — explicit target mode (required)
 }
 
 func handleViewSetMode(params json.RawMessage) (any, error) {
@@ -1338,12 +1338,12 @@ func handleViewSetMode(params json.RawMessage) (any, error) {
 		}
 	}
 	switch p.Mode {
-	case "terrain", "doodad":
+	case "terrain", "doodad", "region":
 		// Explicit, valid target.
 	case "":
-		return nil, errors.New("mode is required: 'terrain' or 'doodad'")
+		return nil, errors.New("mode is required: 'doodad', 'terrain', or 'region'")
 	default:
-		return nil, fmt.Errorf("mode must be 'terrain' or 'doodad' (got %q)", p.Mode)
+		return nil, fmt.Errorf("mode must be 'doodad', 'terrain', or 'region' (got %q)", p.Mode)
 	}
 	// Record the target on the session for read-back, then emit the explicit
 	// SET command. The JS receiver only flips when the current state differs,

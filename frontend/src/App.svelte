@@ -126,7 +126,12 @@
   // and the Properties panel renders an additional section. Selecting an
   // entity (or clicking outside the map) does NOT clear it on its own — the
   // user explicitly clicks elsewhere on terrain to update.
-  let terrainPickModeOn: boolean = $state(false)
+  // Top-level editor mode. 'doodad' is the default (place doodads/units, select
+  // & move entities); 'terrain' paints/inspects terrain; 'region' owns the
+  // viewport for drawing/selecting regions. Panels + the click pipeline gate on
+  // this directly via setEditorMode (the modes are mutually exclusive).
+  type EditorMode = 'doodad' | 'terrain' | 'region'
+  let editorMode: EditorMode = $state('doodad')
   let terrainCell: TerrainCellInfo | null = $state(null)
 
   // Doodad-placement state. When a type_id is armed (from the Doodad Palette),
@@ -153,15 +158,13 @@
 
   // Region (rect) Editor state. The RegionPanel owns its own list UI + the
   // numeric editors (it calls the Wails region bindings directly); App owns the
-  // viewport-facing pieces: the rect-draw tool (armed flag + two-corner capture)
-  // and the scene overlay sync. selectedRegionCN drives the overlay highlight;
+  // viewport-facing pieces: the region-mode drag-to-draw + click-to-select
+  // (handled in the scene, wired via handleRegionDraw/handleRegionPick) and the
+  // scene overlay sync. selectedRegionCN drives the overlay highlight;
   // regionRefreshToken is bumped to tell the panel + overlay to re-fetch after
-  // an out-of-panel change (rect-draw create, MCP edit, undo/redo). regionRectA
-  // holds the first corner while a rect-draw is mid-capture (null = idle).
-  let regionRectDrawArmed: boolean = $state(false)
+  // an out-of-panel change (a viewport draw, MCP edit, undo/redo).
   let selectedRegionCN: number | null = $state(null)
   let regionRefreshToken: number = $state(0)
-  let regionRectA: { x: number; y: number } | null = null
   // Whether the region-rectangle overlay is drawn in the viewport. Pure view
   // preference — the regions are untouched. Persisted so it survives reloads,
   // and re-applied to the scene after every map load via syncRegionOverlay.
@@ -843,6 +846,8 @@
       scene.onTerrainPick(handleTerrainPick)
       scene.onPlacementPick(handlePlacementPick)
       scene.onTerrainBrushStroke(handleTerrainBrushStroke)
+      scene.onRegionDraw(handleRegionDraw)
+      scene.onRegionPick(handleRegionPick)
       // Re-apply persisted diagnostics / verbose-logging settings now that the
       // scene + logger exist.
       scene.setDiagnosticsMode(diagnosticsOn)
@@ -963,9 +968,8 @@
         startLocArmed = false
         startLocations = []
         scene?.setPlacementMode(false)
-        // Map closed — clear the region overlay + disarm rect-draw.
-        regionRectDrawArmed = false
-        regionRectA = null
+        // Map closed — exit region mode + clear the region overlay/selection.
+        if (editorMode === 'region') setEditorMode('doodad')
         selectedRegionCN = null
         scene?.setRegionOverlay([])
         scene?.setSelectedRegion(null)
@@ -1197,10 +1201,10 @@
           toggleTerrainPickMode()
           break
         case 'view.mode': {
-          // Idempotent SET (from view.set_mode): args[0] is 'terrain' | 'doodad'.
-          // Flip only when the current mode differs so repeated calls are no-ops.
-          const wantTerrain = args[0] === 'terrain'
-          if (wantTerrain !== terrainPickModeOn) toggleTerrainPickMode()
+          // Idempotent SET (from view.set_mode): args[0] is 'doodad' | 'terrain'
+          // | 'region'. setEditorMode is a no-op when already in that mode.
+          const m = args[0]
+          if (m === 'doodad' || m === 'terrain' || m === 'region') setEditorMode(m)
           break
         }
         case 'terrain.set': {
@@ -1734,7 +1738,6 @@
     if (typeId) {
       armedDoodadType = null
       startLocArmed = false
-      regionRectDrawArmed = false
       onTerrainBrushChange(null)
       scene?.setPlacementGhost(null, {}) // no doodad ghost for unit placement
     }
@@ -1758,7 +1761,6 @@
     if (armed) {
       armedUnitType = null
       armedDoodadType = null
-      regionRectDrawArmed = false
       onTerrainBrushChange(null)
       scene?.setPlacementGhost(null, {})
     }
@@ -1835,32 +1837,30 @@
     }
   }
 
-  // Arm/disarm the viewport rect-draw tool. Reuses the scene's placement-mode
-  // machinery for a two-click rectangle: first map click = corner A, second =
-  // corner B → CreateRegion. Rect-draw and doodad placement are mutually
-  // exclusive (both ride placement mode), so arming one disarms the other.
-  function armRegionRectDraw(armed: boolean) {
-    if (armed && !status.loaded) {
-      showToast('Open a map before drawing regions', 'error')
-      return
-    }
-    regionRectDrawArmed = armed
-    regionRectA = null
-    if (armed) {
-      armDoodad(null)            // doodad + region rect-draw are exclusive
-      armedUnitType = null       // and exclusive with unit + start-location
-      startLocArmed = false
-      onTerrainBrushChange(null) // and exclusive with the terrain brush
-      scene?.setPlacementGhost(null, {})
-      scene?.setPlacementMode(true)
-    } else {
-      scene?.setPlacementMode(false)
-    }
-  }
-
   function onSelectRegion(cn: number | null) {
     selectedRegionCN = cn
     scene?.setSelectedRegion(cn)
+  }
+
+  // Region-mode viewport handlers (registered with the scene in onMount). In
+  // region mode a drag draws a new region; a click selects the one under the
+  // cursor (or clears). Drawing creates on the Go side (allocates a
+  // creation_number + records undo), then re-syncs the overlay and selects it.
+  async function handleRegionDraw(minX: number, minY: number, maxX: number, maxY: number) {
+    try {
+      const name = `Region ${Date.now() % 100000}`
+      const cn = await CreateRegion(name, minX, minY, maxX, maxY, '', '', [255, 255, 255])
+      await syncRegionOverlay()
+      onSelectRegion(cn)
+      regionRefreshToken++
+      dirty = true
+    } catch (e) {
+      showToast('Create region failed: ' + String(e), 'error')
+    }
+  }
+  function handleRegionPick(cn: number | null) {
+    onSelectRegion(cn)
+    if (cn !== null) regionRefreshToken++ // nudge the panel to surface it
   }
 
   // Terrain Palette → scene wiring. The palette (shown only in Terrain Mode)
@@ -1981,32 +1981,6 @@
   // then add the rendered instance live and reflect it in our doodads array —
   // no full map reload. A null hit means the user cancelled (Escape): disarm.
   async function handlePlacementPick(hit: { worldX: number; worldY: number; z: number } | null) {
-    // Region rect-draw rides placement mode: two clicks define the rectangle.
-    // Takes priority over doodad placement (the two are armed mutually
-    // exclusively, but guard explicitly).
-    if (regionRectDrawArmed) {
-      if (!hit) { armRegionRectDraw(false); return } // Escape / off-map cancel
-      if (!regionRectA) {
-        regionRectA = { x: hit.worldX, y: hit.worldY }
-        showToast('Click the opposite corner to finish the region.', 'info')
-        return
-      }
-      const a = regionRectA
-      regionRectA = null
-      try {
-        const name = `Region ${Date.now() % 100000}`
-        const cn = await CreateRegion(name, a.x, a.y, hit.worldX, hit.worldY, '', '', [255, 255, 255])
-        await syncRegionOverlay()
-        onSelectRegion(cn)
-        regionRefreshToken++
-        dirty = true
-      } catch (e) {
-        showToast('Create region failed: ' + String(e), 'error')
-      }
-      // Stay armed so the user can draw several regions in a row (Escape or the
-      // Draw toggle disarms).
-      return
-    }
     // Start-location placement: the next click drops a sloc at the next free
     // start-location index, owned by that index (gg_start_location_<index>).
     // Stay armed for rapid placement (Escape / toggle disarms).
@@ -2255,25 +2229,43 @@
     }
   }
 
-  function toggleTerrainPickMode() {
-    // Entering terrain mode disarms any in-progress placement (doodad, unit, or
-    // start location) so the two click-routing modes don't fight over the
-    // canvas (placement wins in the scene's click handler, which would
-    // otherwise swallow terrain clicks).
-    if (!terrainPickModeOn) {
+  // Single source of truth for the editor's top-level mode. Encapsulates the
+  // leave-prev / enter-next side effects so the viewport's click pipeline never
+  // has two modes fighting over it (placement/terrain/region are exclusive).
+  function setEditorMode(next: EditorMode) {
+    if (next === editorMode) return
+    const prev = editorMode
+    // ── Leave the previous mode ──
+    if (prev === 'terrain') {
+      terrainCell = null
+      // Disarm any armed terrain brush (its palette unmounts) + drop the cell
+      // highlight so the scene exits brush mode cleanly.
+      if (terrainBrush) onTerrainBrushChange(null)
+      scene?.setHighlightedCell(null)
+      scene?.setTerrainPickMode(false)
+    } else if (prev === 'region') {
+      onSelectRegion(null)
+      scene?.setRegionMode(false)
+    } else {
+      // Leaving Doodad mode: disarm any in-progress placement so it can't
+      // swallow clicks meant for the new mode.
       if (armedDoodadType) armDoodad(null)
       if (armedUnitType) armUnit(null)
       if (startLocArmed) armStartLoc(false)
     }
-    terrainPickModeOn = !terrainPickModeOn
-    scene?.setTerrainPickMode(terrainPickModeOn)
-    if (!terrainPickModeOn) {
-      terrainCell = null
-      // Leaving Terrain Mode: disarm any armed terrain brush (the palette
-      // unmounts) so the scene exits brush mode, and drop the cell highlight.
-      if (terrainBrush) onTerrainBrushChange(null)
-      scene?.setHighlightedCell(null)
+    editorMode = next
+    // ── Enter the next mode ──
+    if (next === 'terrain') {
+      scene?.setTerrainPickMode(true)
+    } else if (next === 'region') {
+      scene?.setRegionMode(true)
     }
+  }
+
+  // Back-compat shim: the bare hotkey + the MCP test hook still toggle between
+  // Terrain and Doodad. Region is entered explicitly via setEditorMode('region').
+  function toggleTerrainPickMode() {
+    setEditorMode(editorMode === 'terrain' ? 'doodad' : 'terrain')
   }
 
   function onViewToggle(detail: { category: string; visible: boolean }) {
@@ -3058,7 +3050,7 @@
     </div>
 
     <div class="flex items-center gap-1.5">
-      {#if !terrainPickModeOn}
+      {#if editorMode === 'doodad'}
       <!-- Gizmo mode toggle (Phase C): Move / Rotate / Scale.
            Bare hotkeys W / E / R. Active mode is highlighted; inactive modes
            sit in muted-secondary so the active one reads at a glance.
@@ -3135,19 +3127,23 @@
       </DropdownMenu.Root>
       <span class="mx-1 inline-block h-5 w-px bg-border" aria-hidden="true"></span>
       {/if}
-      <Button
-        size="sm"
-        variant={terrainPickModeOn ? 'default' : 'secondary'}
-        class={terrainPickModeOn
-          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-          : 'bg-blue-600 text-white hover:bg-blue-700'}
-        onclick={toggleTerrainPickMode}
-        title={terrainPickModeOn
-          ? 'Terrain mode active — clicking a cell shows its data. Click to switch to Doodad mode.'
-          : 'Doodad mode active — clicking selects entities. Click to switch to Terrain mode.'}
-      >
-        {terrainPickModeOn ? 'Terrain Mode' : 'Doodad Mode'}
-      </Button>
+      <div class="inline-flex items-center gap-0.5 rounded-md border border-border p-0.5" role="group" aria-label="Editor mode">
+        <Button size="sm"
+          variant={editorMode === 'doodad' ? 'default' : 'secondary'}
+          class={editorMode === 'doodad' ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-transparent text-foreground hover:bg-muted'}
+          onclick={() => setEditorMode('doodad')}
+          title="Doodad mode — place doodads/units; click selects & drags entities.">Doodad</Button>
+        <Button size="sm"
+          variant={editorMode === 'terrain' ? 'default' : 'secondary'}
+          class={editorMode === 'terrain' ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-transparent text-foreground hover:bg-muted'}
+          onclick={() => setEditorMode('terrain')}
+          title="Terrain mode — paint terrain / inspect a cell's data.">Terrain</Button>
+        <Button size="sm"
+          variant={editorMode === 'region' ? 'default' : 'secondary'}
+          class={editorMode === 'region' ? 'bg-amber-600 text-white hover:bg-amber-700' : 'bg-transparent text-foreground hover:bg-muted'}
+          onclick={() => setEditorMode('region')}
+          title="Region mode — drag to draw a region rectangle; click to select one.">Region</Button>
+      </div>
       <span class="mx-1 inline-block h-5 w-px bg-border" aria-hidden="true"></span>
       <Button
         size="sm"
@@ -3210,7 +3206,7 @@
            Doodad Mode only (the terrain palette takes the same slot in Terrain
            Mode). Reports the armed type via onArm so App drives the scene's
            placement mode and the click-to-place flow. -->
-      {#if status.loaded && !terrainPickModeOn}
+      {#if status.loaded && editorMode === 'doodad'}
         <DoodadPalette armedTypeId={armedDoodadType} {reforged} onArm={armDoodad} />
       {/if}
       <!-- Unit palette: floating "users" launcher (bottom-left, above the
@@ -3218,7 +3214,7 @@
            Lets the user place units (owned by a chosen player slot) and start
            locations, and lists/deletes existing start locations. App drives the
            scene's placement mode + the click-to-place flow. -->
-      {#if status.loaded && !terrainPickModeOn}
+      {#if status.loaded && editorMode === 'doodad'}
         <UnitPalette
           armedTypeId={armedUnitType}
           armedPlayer={armedUnitPlayer}
@@ -3234,20 +3230,19 @@
       <!-- Terrain palette: floating "mountain" launcher (bottom-left). Shown in
            Terrain Mode only. Reports the armed brush via onChange; App drives
            the scene's brush mode + the Go brush calls. -->
-      {#if status.loaded && terrainPickModeOn}
+      {#if status.loaded && editorMode === 'terrain'}
         <TerrainPalette loaded={status.loaded} onChange={onTerrainBrushChange} />
       {/if}
-      <!-- Region (rect) panel: floating launcher (bottom-left, stacks beside
-           the doodad/terrain FABs). Available in any mode — regions are not a
-           terrain/doodad sub-mode. Owns its list + numeric editors (direct Wails
-           calls); App owns the overlay sync + the rect-draw viewport tool. -->
-      {#if status.loaded}
+      <!-- Region panel: the Region-mode side panel (lists regions, numeric
+           create, the show/hide overlay toggle). Shown only in Region mode —
+           drawing/selecting regions is the viewport interaction that mode owns.
+           Owns its list + numeric editors (direct Wails calls); App owns the
+           overlay sync + the viewport draw/select wiring. -->
+      {#if status.loaded && editorMode === 'region'}
         <RegionPanel
           loaded={status.loaded}
-          rectDrawArmed={regionRectDrawArmed}
           selectedCN={selectedRegionCN}
           refreshToken={regionRefreshToken}
-          onArmRectDraw={armRegionRectDraw}
           onSelectRegion={onSelectRegion}
           onRegionsChanged={() => { void syncRegionOverlay(); regionRefreshToken++ }}
           overlayVisible={regionOverlayVisible}
