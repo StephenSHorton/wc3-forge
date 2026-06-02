@@ -25,6 +25,8 @@
   import PlusIcon from '@lucide/svelte/icons/plus'
   import Trash2Icon from '@lucide/svelte/icons/trash-2'
   import SquareDashedIcon from '@lucide/svelte/icons/square-dashed'
+  import EyeIcon from '@lucide/svelte/icons/eye'
+  import EyeOffIcon from '@lucide/svelte/icons/eye-off'
 
   let {
     loaded = false,
@@ -34,6 +36,8 @@
     onArmRectDraw,
     onSelectRegion,
     onRegionsChanged,
+    overlayVisible = true,
+    onToggleOverlay,
   }: {
     // Whether a map is loaded — gates the launcher.
     loaded?: boolean
@@ -53,6 +57,11 @@
     // Fired after any panel-driven create/resize/rename/delete so App can
     // re-push the overlay region list + refresh anything else.
     onRegionsChanged: () => void
+    // Whether the region-rectangle overlay is currently drawn in the viewport
+    // (owned + persisted by App). Drives the eye toggle's icon/state.
+    overlayVisible?: boolean
+    // Toggle the viewport overlay on/off (App persists the preference).
+    onToggleOverlay: () => void
   } = $props()
 
   let open = $state(false)
@@ -251,6 +260,16 @@
         <SquareDashedIcon size={14} />
         <span>Draw</span>
       </button>
+      <button
+        class="overlay-toggle"
+        class:off={!overlayVisible}
+        title={overlayVisible ? 'Hide region outlines in the viewport' : 'Show region outlines in the viewport'}
+        aria-label={overlayVisible ? 'Hide regions in viewport' : 'Show regions in viewport'}
+        aria-pressed={!overlayVisible}
+        onclick={onToggleOverlay}
+      >
+        {#if overlayVisible}<EyeIcon size={14} />{:else}<EyeOffIcon size={14} />{/if}
+      </button>
     </div>
 
     {#if rectDrawArmed}
@@ -420,6 +439,23 @@
     background: var(--accent);
     color: var(--accent-foreground);
     border-color: var(--accent);
+  }
+  .overlay-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 24px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--secondary);
+    color: var(--secondary-foreground);
+    cursor: pointer;
+  }
+  /* "off" = overlay hidden: dim the control so the state reads at a glance. */
+  .overlay-toggle.off {
+    background: var(--muted);
+    color: var(--muted-foreground);
   }
 
   .region-armed {

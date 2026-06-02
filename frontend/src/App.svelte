@@ -162,6 +162,22 @@
   let selectedRegionCN: number | null = $state(null)
   let regionRefreshToken: number = $state(0)
   let regionRectA: { x: number; y: number } | null = null
+  // Whether the region-rectangle overlay is drawn in the viewport. Pure view
+  // preference — the regions are untouched. Persisted so it survives reloads,
+  // and re-applied to the scene after every map load via syncRegionOverlay.
+  // Default ON so regions are visible out of the box (matches prior behavior).
+  const REGION_OVERLAY_LS_KEY = 'wc3-forge:showRegions'
+  let regionOverlayVisible: boolean = $state((() => {
+    try {
+      const raw = localStorage.getItem(REGION_OVERLAY_LS_KEY)
+      return raw === null ? true : raw === '1'
+    } catch { return true }
+  })())
+  function toggleRegionOverlay() {
+    regionOverlayVisible = !regionOverlayVisible
+    try { localStorage.setItem(REGION_OVERLAY_LS_KEY, regionOverlayVisible ? '1' : '0') } catch {}
+    scene?.setRegionOverlayVisible(regionOverlayVisible)
+  }
 
   // Terrain-brush state. The Terrain Palette reports the armed brush here; we
   // mirror its size/shape to the scene's footprint cursor and put the scene in
@@ -1807,6 +1823,8 @@
         color: [r.color[0], r.color[1], r.color[2]] as [number, number, number],
       }))
       scene.setRegionOverlay(rects)
+      // Re-apply the persisted show/hide preference after every (re)load/edit.
+      scene.setRegionOverlayVisible(regionOverlayVisible)
       // Drop the highlight if the selected region no longer exists.
       if (selectedRegionCN !== null && !rects.some((x) => x.creationNumber === selectedRegionCN)) {
         selectedRegionCN = null
@@ -3232,6 +3250,8 @@
           onArmRectDraw={armRegionRectDraw}
           onSelectRegion={onSelectRegion}
           onRegionsChanged={() => { void syncRegionOverlay(); regionRefreshToken++ }}
+          overlayVisible={regionOverlayVisible}
+          onToggleOverlay={toggleRegionOverlay}
         />
       {/if}
     </section>

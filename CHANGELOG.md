@@ -4,6 +4,17 @@ All notable changes to wc3-forge are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-06-01
+
+### Added
+
+- **Show/hide regions toggle.** The Region panel header now has an eye toggle
+  that hides the region-rectangle overlay in the viewport, so the orange region
+  outlines can be cleared out of the way without deleting the regions. It's a
+  pure view preference — the regions themselves are untouched — and it persists
+  across reloads and is re-applied on every map load (same convention as the
+  doodad-category visibility toggle).
+
 ## [1.0.0] - 2026-06-01
 
 Phase 0 — the data-integrity floor. 1.0 is the promise that your map survives a

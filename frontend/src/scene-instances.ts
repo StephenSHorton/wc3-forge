@@ -737,6 +737,12 @@ export interface SceneAPI {
    */
   setSelectedRegion(creationNumber: number | null): void
   /**
+   * Show or hide the entire region-rectangle overlay in the viewport. Pure
+   * render state — the regions themselves are untouched. App.svelte persists
+   * the preference to localStorage and re-applies it on every map load.
+   */
+  setRegionOverlayVisible(visible: boolean): void
+  /**
    * Hide or show every doodad instance in a category. Pass "*" to affect
    * every doodad. Visibility is rendering-only — the underlying data is
    * unchanged, never persisted. Re-applied on every loadMap so hidden
@@ -1127,6 +1133,10 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
   // (App.svelte mirrors them from the Region panel + entity-changed events).
   // Same overlay lifetime as cellHighlight; non-fatal if build fails.
   let regionOverlay: RegionOverlay | null = null
+  // When false, the region overlay is skipped in the draw loop — the regions
+  // themselves are untouched. Driven by App.svelte's persisted "show regions"
+  // preference (re-applied on every map load via setRegionOverlayVisible).
+  let regionOverlayVisible = true
   try {
     regionOverlay = buildRegionOverlay((viewer as any).gl as WebGLRenderingContext)
   } catch (e) {
@@ -1520,7 +1530,7 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
         // Drawn LAST before the gizmo so the wireframe sits visually on top
         // of every other layer including water.
         if (cellHighlight) cellHighlight.draw(scene.camera.viewProjectionMatrix)
-        if (regionOverlay) regionOverlay.draw(scene.camera.viewProjectionMatrix)
+        if (regionOverlay && regionOverlayVisible) regionOverlay.draw(scene.camera.viewProjectionMatrix)
         // Terrain-brush footprint ring (only visible while the palette is armed
         // and the cursor is over the map). Same always-on-top overlay tier.
         if (brushCursor) brushCursor.draw(scene.camera.viewProjectionMatrix)
@@ -4071,6 +4081,9 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     },
     setSelectedRegion(creationNumber: number | null) {
       regionOverlay?.setSelected(creationNumber)
+    },
+    setRegionOverlayVisible(visible: boolean) {
+      regionOverlayVisible = visible
     },
     setDoodadCategoryVisible(category: string, visible: boolean) {
       // "*" affects every category. Walk the per-instance category map and
