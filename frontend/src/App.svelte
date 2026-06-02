@@ -1439,6 +1439,21 @@
       e.preventDefault()
       setGizmoMode(next)
     }
+    // Editor mode cycle: Tab → Doodad → Terrain → Region → (wrap); Shift+Tab
+    // reverses (Blender-style mode toggling). Skip while a text field / select
+    // / contenteditable has focus so Tab keeps doing normal focus traversal
+    // there, and only when a map is loaded (modes are inert without one).
+    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const tgt = e.target as HTMLElement | null
+      const tagName = tgt?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tgt?.isContentEditable) return
+      if (!status.loaded) return
+      e.preventDefault()
+      const order: EditorMode[] = ['doodad', 'terrain', 'region']
+      const i = order.indexOf(editorMode)
+      const nextI = e.shiftKey ? (i + order.length - 1) % order.length : (i + 1) % order.length
+      setEditorMode(order[nextI])
+    }
     // Diagnostics overlay toggle: F9. No input-focus gate needed (function
     // keys aren't text input), no modifiers.
     if (e.key === 'F9' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
@@ -3127,7 +3142,7 @@
       </DropdownMenu.Root>
       <span class="mx-1 inline-block h-5 w-px bg-border" aria-hidden="true"></span>
       {/if}
-      <div class="inline-flex items-center gap-0.5 rounded-md border border-border p-0.5" role="group" aria-label="Editor mode">
+      <div class="inline-flex items-center gap-0.5 rounded-md border border-border p-0.5" role="group" aria-label="Editor mode" title="Tab / Shift+Tab to cycle modes">
         <Button size="sm"
           variant={editorMode === 'doodad' ? 'default' : 'secondary'}
           class={editorMode === 'doodad' ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-transparent text-foreground hover:bg-muted'}

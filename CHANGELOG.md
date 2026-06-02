@@ -20,12 +20,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cleared out of the way without deleting the regions. Pure view preference —
   the regions are untouched — persisted across reloads and re-applied on every
   map load (same convention as the doodad-category visibility toggle).
+- **Tab cycles editor modes** (Doodad → Terrain → Region; Shift+Tab reverses),
+  skipping the cycle while a text field has focus.
+- The Terrain palette now **auto-opens on entering Terrain mode** (matching the
+  Region panel), instead of hiding behind its launcher.
 
 ### Changed
 
 - The single Doodad/Terrain mode toggle is now a three-way Doodad / Terrain /
-  Region switch. `view.set_mode` accepts `"region"` in addition to `"doodad"`
-  and `"terrain"`.
+  Region switch (Tab / Shift+Tab cycles). `view.set_mode` accepts `"region"`
+  in addition to `"doodad"` and `"terrain"`.
 
 ### Removed
 
