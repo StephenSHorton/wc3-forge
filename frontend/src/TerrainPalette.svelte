@@ -57,7 +57,9 @@
 
   interface TileEntry { fourcc: string; color: string; texture: string; thumb: string }
 
-  let open = $state(false)
+  // Default open: this palette only mounts while in Terrain mode, so showing it
+  // immediately on entry (rather than behind the FAB) matches the Region panel.
+  let open = $state(true)
   let loading = $state(false)
   let ground: TileEntry[] = $state([])
   let cliffs: TileEntry[] = $state([])
