@@ -550,6 +550,9 @@ var unitFieldMap = map[string]string{
 	"unam":      "name",       // unit name override (w3u)
 	"umdl":      "file",       // unit model-file override (w3u / war3mapSkin.w3u) — custom skins
 	"usca":      "modelscale", // unit scaling value (Art - Scaling Value)
+	"uclr":      "red",        // Art - Tinting Color 1 (Red)
+	"uclg":      "green",      // Art - Tinting Color 2 (Green)
+	"uclb":      "blue",       // Art - Tinting Color 3 (Blue)
 	"unsf":      "editorsuffix",
 	"utub":      "tilesets",
 	"urac":      "race",
@@ -624,6 +627,16 @@ func applyUnitOverrides(base UnitTypeInfo, ov w3objmod.Overrides, mapStrings wts
 			// Art - Scaling Value (usca). Only applies when the override is
 			// present; absent leaves the stock scale (default 1).
 			out.ModelScale = parseFloat(val, base.ModelScale)
+		case "red":
+			// Art - Tinting Color (uclr/uclg/uclb), 0..255 per channel. Only
+			// applied when the override is present; the renderer treats an
+			// all-zero tint as "no tint" (scene-instances leaves the instance
+			// default-white), so an untinted unit is never darkened.
+			out.Red = parseInt(val, base.Red)
+		case "green":
+			out.Green = parseInt(val, base.Green)
+		case "blue":
+			out.Blue = parseInt(val, base.Blue)
 		case "art":
 			// Per-map custom units may declare their own command-button icon
 			// (war3map.w3u uart field). Lets a map override the Footman
