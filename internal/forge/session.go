@@ -248,17 +248,28 @@ type Session struct {
 	abilityMods      *w3objmod.File // war3map.w3a (opt=true)
 	buffMods         *w3objmod.File // war3map.w3h
 	upgradeMods      *w3objmod.File // war3map.w3q (opt=true)
-	shadowMap        *shd.File      // war3map.shd
-	pathingMap       *wpm.File      // war3map.wpm
-	strings          wts.Strings    // war3map.wts, for TRIGSTR_<n> resolution
+	// objectSkinMods holds the Reforged "skin" companion tables
+	// (war3mapSkin.w3u/.w3t/.w3a/.w3b/.w3d/.w3h/.w3q), keyed by KindConfig.Kind
+	// ("units", "items", ...). Reforged's World Editor splits per-map object
+	// overrides across two files per kind: war3map.w3* carries gameplay/logic
+	// edits, war3mapSkin.w3* carries the art/skin overrides (Name unam, Model
+	// File umdl, Icon uico, Tooltip utip). We load these read-only and merge
+	// them UNDER the primary shadow (primary wins; skin fills fields the primary
+	// doesn't set) so custom units surface their real name + model instead of
+	// the base type's. Never edited in place, so Save preserves them verbatim
+	// via the lossless copy-through — there is no dirty flag for them.
+	objectSkinMods map[string]*w3objmod.File
+	shadowMap      *shd.File   // war3map.shd
+	pathingMap     *wpm.File   // war3map.wpm
+	strings        wts.Strings // war3map.wts, for TRIGSTR_<n> resolution
 	// infoTokens maps a Map Info Description field key ("name"/"author"/
 	// "description"/"suggestedPlayers") to its ORIGINAL "TRIGSTR_<n>" token,
 	// captured at Open before ResolveStrings resolved the field to its display
 	// value. Lets a Map Info edit update the referenced wts entry (rather than
 	// orphaning it) and lets Save re-inject the token into w3i. nil/empty for a
 	// non-localized map. See info_trigstr.go.
-	infoTokens       map[string]string
-	gameplay         *miscdata.File // war3mapMisc.txt — per-map gameplay-constants overrides
+	infoTokens map[string]string
+	gameplay   *miscdata.File // war3mapMisc.txt — per-map gameplay-constants overrides
 
 	// regions / cameras — OPTIONAL. Phase 2b2 added Parse-only support so the
 	// Trigger Editor's gg_rct_*/gg_cam_* entity-name resolver + the region /
@@ -698,6 +709,29 @@ func (s *Session) openWithSource(abs string, src fileSource, rawMapBytes []byte,
 		return err
 	}
 
+	// war3mapSkin.w3{d,b,u,t,a,h,q} — OPTIONAL Reforged "skin" companion tables.
+	// Reforged's World Editor writes the art/skin overrides (Name unam, Model
+	// File umdl, Icon uico, Tooltip utip) into these siblings of the plain
+	// war3map.w3* tables. Loaded read-only, keyed by kind, and merged UNDER the
+	// primary shadow at read time (see MergedObjects / mergeUnitIndex). Same
+	// per-kind extension + opt flag as the primary table, derived from each
+	// registered KindConfig so this stays in lockstep as kinds are added.
+	skinMods := map[string]*w3objmod.File{}
+	for _, kc := range kindConfigs {
+		skinName := strings.Replace(kc.ShadowFile, "war3map.", "war3mapSkin.", 1)
+		parse := parseFlat
+		if kc.ShadowOpt {
+			parse = parseOpt
+		}
+		f, err := readOpt(src, skinName, parse)
+		if err != nil {
+			return err
+		}
+		if f != nil {
+			skinMods[kc.Kind] = f
+		}
+	}
+
 	// war3mapMisc.txt — OPTIONAL per-map gameplay-constants overrides. Maps
 	// without this file inherit the stock MiscData.txt values; nothing to
 	// load. The editor exposes whatever overrides are present + lets the
@@ -766,6 +800,7 @@ func (s *Session) openWithSource(abs string, src fileSource, rawMapBytes []byte,
 	s.abilityMods = abilityMods
 	s.buffMods = buffMods
 	s.upgradeMods = upgradeMods
+	s.objectSkinMods = skinMods
 	s.shadowMap = shadowMap
 	s.pathingMap = pathingMap
 	s.regions = regionsFile
@@ -924,6 +959,7 @@ func (s *Session) Close() {
 	s.abilityMods = nil
 	s.buffMods = nil
 	s.upgradeMods = nil
+	s.objectSkinMods = nil
 	s.shadowMap = nil
 	s.pathingMap = nil
 	s.regions = nil
@@ -1101,6 +1137,22 @@ func (s *Session) ItemMods() *w3objmod.File {
 	defer s.mu.RUnlock()
 	return s.itemMods
 }
+
+// SkinMods returns the parsed war3mapSkin.w3* companion table for the given
+// KindConfig.Kind ("units", "items", ...), or nil if the map has none. These
+// are the Reforged art/skin overrides (Name, Model File, Icon) that the
+// renderer + Object Editor layer UNDER the primary shadow.
+func (s *Session) SkinMods(kind string) *w3objmod.File {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.objectSkinMods[kind]
+}
+
+// UnitSkinMods returns war3mapSkin.w3u (unit art/skin overrides), or nil.
+func (s *Session) UnitSkinMods() *w3objmod.File { return s.SkinMods("units") }
+
+// ItemSkinMods returns war3mapSkin.w3t (item art/skin overrides), or nil.
+func (s *Session) ItemSkinMods() *w3objmod.File { return s.SkinMods("items") }
 
 // AbilityMods returns the parsed war3map.w3a (per-map ability modifications +
 // new derived abilities), or nil if absent. Phase 2b accessor.

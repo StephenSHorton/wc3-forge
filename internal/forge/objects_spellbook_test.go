@@ -231,7 +231,7 @@ func TestApplyOverrides_SharedColumnKeyedByFourCC(t *testing.T) {
 		"spb1": "list",
 		"spb3": "3",
 		"anam": "Book",
-	}, meta)
+	}, meta, false)
 
 	// Shared fields land in distinct FourCC slots, not one "data" slot.
 	if u.Fields["spb1"] != "list" {

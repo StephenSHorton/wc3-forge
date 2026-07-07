@@ -304,28 +304,61 @@ func MergedObjects(cfg *KindConfig) (map[string]*MergedObject, *ObjectMetadata, 
 		}
 	}
 
-	// Layer 2: per-map shadow from the kind's war3map.w3* file.
+	// Layer 2: per-map shadows, primary-first. The primary war3map.w3* wins on
+	// any field it sets; the Reforged war3mapSkin.w3* companion then fills the
+	// art/skin fields (Name unam, Model File umdl, Icon uico, Tooltip utip) the
+	// primary leaves untouched. Real-world Reforged maps put a custom unit's
+	// gameplay edits in war3map.w3u and its name/model/icon in war3mapSkin.w3u,
+	// so without the skin layer every custom unit shows its base type's name +
+	// model. Both read under one lock acquisition.
 	Current.mu.RLock()
 	mods := cfg.GetMods(Current)
+	skin := Current.objectSkinMods[cfg.Kind]
 	Current.mu.RUnlock()
-	if mods != nil {
-		for _, edit := range mods.OriginalEdits {
-			u, ok := out[edit.BaseID]
-			if !ok {
-				// Original-table entry pointing at a base ID we don't know.
-				// Fabricate a stub so the override is still visible.
-				u = &MergedObject{
-					ID:         edit.BaseID,
-					Fields:     map[string]string{},
-					Overridden: map[string]bool{},
-				}
-				out[edit.BaseID] = u
+	applyModLayer(out, base, mods, meta, false) // primary: authoritative identity + gameplay
+	applyModLayer(out, base, skin, meta, true)  // skin: fill art fields the primary didn't set
+
+	return out, meta, nil
+}
+
+// applyModLayer folds one w3objmod shadow (primary war3map.w3* or its Reforged
+// war3mapSkin.w3* companion) into the merged-object map. Shared by the primary
+// and skin sub-layers of MergedObjects.
+//
+// fillOnly = false (primary): OriginalEdits apply in full; each Custom is minted
+// fresh from its base row (authoritative identity — matches the pre-skin
+// behavior, so a custom ID that shadows a stock row still becomes the custom).
+//
+// fillOnly = true (skin): overrides only write fields the primary hasn't already
+// set (see applyOverrides), and a Custom is created from base ONLY when the
+// primary layer didn't already mint it — a skin-only custom. When the primary
+// already minted the object, the skin overrides just fill its empty art fields.
+func applyModLayer(out map[string]*MergedObject, base *slk.Mapped, mods *w3objmod.File, meta *ObjectMetadata, fillOnly bool) {
+	if mods == nil {
+		return
+	}
+	for _, edit := range mods.OriginalEdits {
+		u, ok := out[edit.BaseID]
+		if !ok {
+			// Original-table entry pointing at a base ID we don't know.
+			// Fabricate a stub so the override is still visible.
+			u = &MergedObject{
+				ID:         edit.BaseID,
+				Fields:     map[string]string{},
+				Overridden: map[string]bool{},
 			}
-			applyOverrides(u, edit.Overrides, meta)
-			applyLevelOverrides(u, edit.Levels, meta)
+			out[edit.BaseID] = u
 		}
-		for _, c := range mods.Customs {
-			u := &MergedObject{
+		applyOverrides(u, edit.Overrides, meta, fillOnly)
+		applyLevelOverrides(u, edit.Levels, meta)
+	}
+	for _, c := range mods.Customs {
+		u, ok := out[c.ID]
+		if !ok || !fillOnly {
+			// Mint fresh from the base row. The primary layer always mints
+			// (authoritative); the skin layer only reaches here for a custom the
+			// primary didn't define (ok == false).
+			u = &MergedObject{
 				ID:         c.ID,
 				BaseID:     c.BaseID,
 				IsCustom:   true,
@@ -337,12 +370,11 @@ func MergedObjects(cfg *KindConfig) (map[string]*MergedObject, *ObjectMetadata, 
 					u.Fields[col] = val
 				}
 			}
-			applyOverrides(u, c.Overrides, meta)
-			applyLevelOverrides(u, c.Levels, meta)
 			out[c.ID] = u
 		}
+		applyOverrides(u, c.Overrides, meta, fillOnly)
+		applyLevelOverrides(u, c.Levels, meta)
 	}
-	return out, meta, nil
 }
 
 // MergedUnits is the Phase-1b read entry point, preserved verbatim as a thin
@@ -356,11 +388,10 @@ func MergedUnits() (map[string]*MergedObject, *ObjectMetadata, error) {
 // writes the values into the merged object's column-name-keyed Fields map.
 // Identical to Phase 1b — kept on the generic since every kind merges the
 // same way (FourCC → metadata column lookup → write into Fields).
-func applyOverrides(u *MergedObject, ov w3objmod.Overrides, meta *ObjectMetadata) {
+func applyOverrides(u *MergedObject, ov w3objmod.Overrides, meta *ObjectMetadata, fillOnly bool) {
 	if len(ov) == 0 {
 		return
 	}
-	u.IsEdited = true
 	for fourCC, val := range ov {
 		col := fourCC
 		if m, ok := meta.ByID[fourCC]; ok {
@@ -371,8 +402,14 @@ func applyOverrides(u *MergedObject, ov w3objmod.Overrides, meta *ObjectMetadata
 		} else if !looksLikeFourCC(fourCC) {
 			col = strings.ToLower(fourCC)
 		}
+		// fillOnly (the war3mapSkin.w3* companion layer) never clobbers a value
+		// the primary war3map.w3* shadow already wrote — primary wins.
+		if fillOnly && u.Overridden[col] {
+			continue
+		}
 		u.Fields[col] = val
 		u.Overridden[col] = true
+		u.IsEdited = true
 	}
 }
 
@@ -771,14 +808,14 @@ func DestructablesConfig() *KindConfig {
 			AppliesFn: func(f ObjectFieldMeta) bool {
 				return f.AppliesToDestructables()
 			},
-			ClassifyFn: classifyByCategoryColumn,
-			CategoryFn: categoryPassthrough,
-			IconArtFn:  destructableIconArt,
+			ClassifyFn:  classifyByCategoryColumn,
+			CategoryFn:  categoryPassthrough,
+			IconArtFn:   destructableIconArt,
 			ModelPathFn: doodadModelPath,
-			GetMods:    func(s *Session) *w3objmod.File { return s.destructibleMods },
-			SetMods:    func(s *Session, f *w3objmod.File) { s.destructibleMods = f },
-			GetDirty:   func(s *Session) bool { return s.dirtyDestructibleMods },
-			SetDirty:   func(s *Session, v bool) { s.dirtyDestructibleMods = v },
+			GetMods:     func(s *Session) *w3objmod.File { return s.destructibleMods },
+			SetMods:     func(s *Session, f *w3objmod.File) { s.destructibleMods = f },
+			GetDirty:    func(s *Session) bool { return s.dirtyDestructibleMods },
+			SetDirty:    func(s *Session, v bool) { s.dirtyDestructibleMods = v },
 		}
 		registerKindConfig(destructablesConfigCfg)
 	})
