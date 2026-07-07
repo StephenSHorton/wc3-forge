@@ -354,6 +354,46 @@
   // tree+field-table render off the DOM until it's actually wanted.
   let showObjectEditor: boolean = $state(false)
   let objectEditorInitialId: string | null = $state(null)
+  // Keyboard-shortcuts cheat sheet overlay. Toggled by '?' (Shift+/) or the
+  // Help menu — the discoverable index of every binding, aimed at World Editor
+  // veterans hunting for the F-keys.
+  let showShortcuts: boolean = $state(false)
+  // Static content for the cheat sheet. Keep in lockstep with the bindings in
+  // onGlobalKeyDown (+ the camera-pan keys in camera.ts).
+  const shortcutGroups: { title: string; items: { label: string; keys: string[] }[] }[] = [
+    { title: 'Editors', items: [
+      { label: 'Object Editor', keys: ['F6'] },
+      { label: 'Trigger Editor', keys: ['F4'] },
+      { label: 'Map Info', keys: ['Ctrl+Shift+I'] },
+    ] },
+    { title: 'Editor mode', items: [
+      { label: 'Doodad / Unit mode', keys: ['F2'] },
+      { label: 'Terrain mode', keys: ['F3'] },
+      { label: 'Region mode', keys: ['F8'] },
+      { label: 'Cycle modes', keys: ['Tab', 'Shift+Tab'] },
+    ] },
+    { title: 'Edit', items: [
+      { label: 'Save', keys: ['Ctrl+S'] },
+      { label: 'Undo', keys: ['Ctrl+Z'] },
+      { label: 'Redo', keys: ['Ctrl+Shift+Z'] },
+      { label: 'Delete selection', keys: ['Del', 'Backspace'] },
+    ] },
+    { title: 'Transform', items: [
+      { label: 'Move', keys: ['1'] },
+      { label: 'Rotate', keys: ['2'] },
+      { label: 'Scale', keys: ['3'] },
+    ] },
+    { title: 'View & camera', items: [
+      { label: 'Pan camera', keys: ['WASD', 'Arrows'] },
+      { label: 'Frame selection', keys: ['F'] },
+      { label: 'Minimap', keys: ['M'] },
+      { label: 'Diagnostics', keys: ['F9'] },
+      { label: 'Agent Console', keys: ['Ctrl+`'] },
+    ] },
+    { title: 'Help', items: [
+      { label: 'This cheat sheet', keys: ['?'] },
+    ] },
+  ]
   function openObjectEditor(id: string | null = null) {
     if (!status.loaded) return
     objectEditorInitialId = id
@@ -1485,6 +1525,43 @@
     if (e.key === 'F9' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
       e.preventDefault()
       toggleDiagnostics()
+    }
+    // Editor / mode function keys — World Editor muscle memory. Function keys
+    // aren't text input, so no input-focus gate; bare (no modifiers). F4 →
+    // Trigger Editor, F6 → Object Editor (matches the classic WE F-key layout
+    // and the shortcut labels already shown in the menu — previously those
+    // labels were advertised but the keys were never wired). openTriggerEditor
+    // / openObjectEditor self-gate on a loaded map.
+    if (e.key === 'F4' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault()
+      openTriggerEditor()
+    }
+    if (e.key === 'F6' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault()
+      openObjectEditor()
+    }
+    // F2 / F3 / F8 switch the viewport editor mode (Doodad / Terrain / Region).
+    // Like the Tab cycle, these need a loaded map (modes are inert without one).
+    if ((e.key === 'F2' || e.key === 'F3' || e.key === 'F8')
+        && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      if (!status.loaded) return
+      e.preventDefault()
+      setEditorMode(e.key === 'F2' ? 'doodad' : e.key === 'F3' ? 'terrain' : 'region')
+    }
+    // Keyboard-shortcuts cheat sheet: '?' (Shift+/ on US layouts). Toggles the
+    // overlay listing every binding. Skip while typing so '?' still types into
+    // a field. Escape (handled in the overlay) also dismisses it.
+    if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const tgt = e.target as HTMLElement | null
+      const tagName = tgt?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
+      e.preventDefault()
+      showShortcuts = !showShortcuts
+    }
+    // Escape closes the shortcuts overlay when it's the topmost surface.
+    if (e.key === 'Escape' && showShortcuts) {
+      e.preventDefault()
+      showShortcuts = false
     }
     // Frame-selected hotkey: bare 'f'. Centers the camera on the current
     // selection's centroid and zooms in to fit. Matches the Blender / Maya
@@ -3110,6 +3187,14 @@
         </DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item
+          onSelect={runMenuAction(() => { showShortcuts = true })}
+          title="Show every keyboard shortcut."
+        >
+          <span class="flex-1">Keyboard Shortcuts…</span>
+          <DropdownMenu.Shortcut>?</DropdownMenu.Shortcut>
+        </DropdownMenu.Item>
+        <DropdownMenu.Separator />
+        <DropdownMenu.Item
           onSelect={runMenuAction(() => { showAboutDialog = true })}
           title="About wc3-forge — version, author, and credits."
         >
@@ -3778,6 +3863,57 @@
   </div>
 
   <BridgeConsole bind:open={bridgeConsoleOpen} />
+
+  {#if showShortcuts}
+    <!-- Keyboard-shortcuts cheat sheet. Toggled by '?' / the Help menu — the
+         discoverable index of every binding (World Editor veterans expect the
+         F-keys). Backdrop click, the × button, '?', or Escape dismiss it. -->
+    <div
+      class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4"
+      role="button"
+      tabindex="-1"
+      aria-label="Close keyboard shortcuts"
+      onclick={() => (showShortcuts = false)}
+    >
+      <div
+        class="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-border bg-background p-5 shadow-xl"
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-label="Keyboard shortcuts"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-base font-semibold">Keyboard Shortcuts</h2>
+          <button type="button" class="rounded px-2 py-0.5 text-muted-foreground hover:bg-muted"
+                  title="Close" onclick={() => (showShortcuts = false)}>×</button>
+        </div>
+        <div class="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+          {#each shortcutGroups as group}
+            <div>
+              <h3 class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.title}</h3>
+              <dl class="space-y-1">
+                {#each group.items as item}
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-sm">{item.label}</dt>
+                    <dd class="shrink-0 space-x-0.5 text-xs text-muted-foreground">
+                      {#each item.keys as key, i}
+                        <kbd class="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">{key}</kbd>{#if i < item.keys.length - 1}<span class="text-muted-foreground">/</span>{/if}
+                      {/each}
+                    </dd>
+                  </div>
+                {/each}
+              </dl>
+            </div>
+          {/each}
+        </div>
+        <p class="mt-4 text-xs text-muted-foreground">
+          Press <kbd class="rounded border border-border bg-muted px-1 py-0.5 font-mono">?</kbd>
+          or <kbd class="rounded border border-border bg-muted px-1 py-0.5 font-mono">Esc</kbd> to close.
+        </p>
+      </div>
+    </div>
+  {/if}
 
   {#if showMapInfoEditor}
     <MapInfoEditor
