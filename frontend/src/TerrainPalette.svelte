@@ -14,6 +14,7 @@
   // average RGB swatch colors, and texture path stems).
   import { GetTerrain, GetTerrainPaletteThumbs } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  import { onMount } from 'svelte'
   import MountainIcon from '@lucide/svelte/icons/mountain'
   import XIcon from '@lucide/svelte/icons/x'
 
@@ -63,6 +64,11 @@
   let loading = $state(false)
   let ground: TileEntry[] = $state([])
   let cliffs: TileEntry[] = $state([])
+  // Distinguishes the empty-grid reasons so the panel doesn't show the same
+  // misleading "No ground tiles" for every case: 'none' = loaded fine (a truly
+  // empty palette is rare but real), 'noterrain' = the map has no war3map.w3e,
+  // 'failed' = the fetch errored (offer a retry).
+  let loadError: 'none' | 'noterrain' | 'failed' = $state('none')
 
   // Armed state.
   let activeTool: TerrainTool | null = $state(null)
@@ -86,6 +92,7 @@
 
   async function refresh() {
     loading = true
+    loadError = 'none'
     try {
       // Real tile thumbnails (data-URL PNGs, Go-baked + cached) alongside the
       // terrain DTO; fetched in parallel since the thumbnail decode is the slow
@@ -118,13 +125,26 @@
       // Default the selected tiles so the first paint/cliff click just works.
       if (!selectedGround && ground.length) selectedGround = ground[0].fourcc
       if (!selectedCliff && cliffs.length) selectedCliff = cliffs[0].fourcc
-    } catch {
+    } catch (e) {
+      // GetTerrain rejects with "no terrain loaded" when the open map has no
+      // war3map.w3e; anything else is an unexpected fetch failure. Classify so
+      // the empty-state message can tell them apart instead of always claiming
+      // "No ground tiles."
+      const msg = e instanceof Error ? e.message : String(e)
+      loadError = /no terrain/i.test(msg) ? 'noterrain' : 'failed'
       ground = []
       cliffs = []
     } finally {
       loading = false
     }
   }
+
+  // First paint: the panel mounts already-open (Terrain mode shows it
+  // immediately), and the map-changed event that also triggers a refresh has
+  // usually already fired by the time the user enters Terrain mode — so without
+  // this the grid stayed empty ("No ground tiles") on first entry even for a
+  // map full of terrain.
+  onMount(() => { void refresh() })
 
   function toggleOpen() {
     open = !open
@@ -231,6 +251,10 @@
           <div class="section-title">Texture</div>
           {#if loading}
             <div class="muted">Loading tiles…</div>
+          {:else if loadError === 'noterrain'}
+            <div class="muted">This map has no terrain file (war3map.w3e).</div>
+          {:else if loadError === 'failed'}
+            <div class="muted">Couldn’t load tiles. <button type="button" class="retry-link" onclick={() => void refresh()}>Retry</button></div>
           {:else if ground.length === 0}
             <div class="muted">No ground tiles.</div>
           {:else}
@@ -455,6 +479,15 @@
     letter-spacing: 0.04em; color: var(--muted-foreground); margin-bottom: 6px;
   }
   .muted { font-size: 0.75rem; color: var(--muted-foreground); padding: 4px 0; }
+  .retry-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--primary, #60a5fa);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
 
   .tile-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
   .tile {
