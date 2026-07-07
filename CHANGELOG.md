@@ -4,6 +4,35 @@ All notable changes to wc3-forge are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-07-06
+
+### Added
+
+- **Keyboard shortcuts + cheat sheet.** World Editor function keys now work:
+  **F4** opens the Trigger Editor, **F6** the Object Editor, and **F2 / F3 /
+  F8** switch the viewport editor mode (Doodad / Terrain / Region). Press **`?`**
+  (or Help → Keyboard Shortcuts) for an overlay listing every binding.
+  Previously the menu advertised F4/F6 but the keys did nothing.
+
+### Fixed
+
+- **Reforged custom object data now loads (units, items, abilities, …).** In
+  Reforged, a custom object's data is split across two tables per kind:
+  `war3map.w3*` holds the gameplay fields and `war3mapSkin.w3*` holds the
+  art/skin overrides — **Name**, **Model File**, **Icon**, **Tooltip**.
+  wc3-forge read only the first, so every custom unit loaded the right count
+  but displayed the base type's name + default model. The skin companion tables
+  are now loaded and merged on top of the base (and preserved losslessly on
+  save), so custom units show their real name, model, and icon.
+- **Custom-skin units render with their overridden model.** A custom unit that
+  swaps its Model File (e.g. a Peasant-based unit using another model) now
+  renders that model in the viewport and the Object Editor preview instead of
+  falling back to the base type's model.
+- **Terrain palette populates on first entry.** The ground-tile grid now loads
+  the moment Terrain mode opens (it could previously show "No ground tiles." on
+  a map full of terrain), and the empty state names the actual reason — a map
+  with no terrain file vs. a load error you can retry.
+
 ## [1.0.4] - 2026-06-04
 
 ### Added
