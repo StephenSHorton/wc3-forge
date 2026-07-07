@@ -136,20 +136,26 @@ func clearObjectField(s *Session, cfg *KindConfig, id, field string) (skin bool,
 	}
 	// Clear from the table that actually holds the base override. A field is
 	// only ever in one table for a given id (routing keeps it there), so the
-	// first hit is authoritative.
-	if clearBaseOverrideFromFile(cfg.GetMods(s), id, fourCC) {
+	// first hit is authoritative. pruneEmptyCustom is set ONLY for the skin
+	// companion: a skin Custom row is a pure art mirror, so once its last
+	// override is gone the row is a phantom and must be dropped (else an
+	// edit→undo→save leaves an inert {id,baseID} row and bumps the file off the
+	// lossless copy-through). A PRIMARY custom row is the object's definition —
+	// an empty one is a legitimate "inherit everything" custom, never dropped.
+	if clearBaseOverrideFromFile(cfg.GetMods(s), id, fourCC, false) {
 		return false, nil
 	}
-	if clearBaseOverrideFromFile(s.objectSkinMods[cfg.Kind], id, fourCC) {
+	if clearBaseOverrideFromFile(s.objectSkinMods[cfg.Kind], id, fourCC, true) {
 		return true, nil
 	}
 	return false, nil
 }
 
 // clearBaseOverrideFromFile deletes the base-slot override for (id, fourCC) in
-// `file`, dropping a now-empty OriginalEdit row. Returns true if it removed
-// anything. Caller MUST hold s.mu (write lock).
-func clearBaseOverrideFromFile(file *w3objmod.File, id, fourCC string) bool {
+// `file`, dropping a now-empty OriginalEdit row (always) or a now-empty Custom
+// row (only when pruneEmptyCustom — the skin companion; see clearObjectField).
+// Returns true if it removed anything. Caller MUST hold s.mu (write lock).
+func clearBaseOverrideFromFile(file *w3objmod.File, id, fourCC string, pruneEmptyCustom bool) bool {
 	if file == nil {
 		return false
 	}
@@ -158,6 +164,9 @@ func clearBaseOverrideFromFile(file *w3objmod.File, id, fourCC string) bool {
 			return false
 		}
 		delete(file.Customs[ci].Overrides, fourCC)
+		if pruneEmptyCustom && len(file.Customs[ci].Overrides) == 0 && len(file.Customs[ci].Levels) == 0 {
+			file.Customs = append(file.Customs[:ci], file.Customs[ci+1:]...)
+		}
 		return true
 	}
 	if ei := findOriginalEditIndex(file, id); ei >= 0 {

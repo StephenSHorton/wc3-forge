@@ -96,19 +96,21 @@ func clearObjectFieldLevel(s *Session, cfg *KindConfig, id, field string, level 
 	if fourCC == "" {
 		return false, fmt.Errorf("unknown field %q", field)
 	}
-	if clearLevelOverrideFromFile(cfg.GetMods(s), id, fourCC, level) {
+	// pruneEmptyCustom set only for the skin companion — see clearObjectField.
+	if clearLevelOverrideFromFile(cfg.GetMods(s), id, fourCC, level, false) {
 		return false, nil
 	}
-	if clearLevelOverrideFromFile(s.objectSkinMods[cfg.Kind], id, fourCC, level) {
+	if clearLevelOverrideFromFile(s.objectSkinMods[cfg.Kind], id, fourCC, level, true) {
 		return true, nil
 	}
 	return false, nil
 }
 
 // clearLevelOverrideFromFile removes the (fourCC, level) entry for `id` in
-// `file`, dropping a now-empty OriginalEdit row. Returns true if the (fourCC,
-// level) entry existed. Caller MUST hold s.mu (write lock).
-func clearLevelOverrideFromFile(file *w3objmod.File, id, fourCC string, level uint32) bool {
+// `file`, dropping a now-empty OriginalEdit row (always) or a now-empty Custom
+// row (only when pruneEmptyCustom — the skin companion; see clearObjectField).
+// Returns true if the (fourCC, level) entry existed. Caller MUST hold s.mu.
+func clearLevelOverrideFromFile(file *w3objmod.File, id, fourCC string, level uint32, pruneEmptyCustom bool) bool {
 	if file == nil {
 		return false
 	}
@@ -117,6 +119,9 @@ func clearLevelOverrideFromFile(file *w3objmod.File, id, fourCC string, level ui
 			return false
 		}
 		file.Customs[ci].Levels = removeLevelOverride(file.Customs[ci].Levels, fourCC, level)
+		if pruneEmptyCustom && len(file.Customs[ci].Overrides) == 0 && len(file.Customs[ci].Levels) == 0 {
+			file.Customs = append(file.Customs[:ci], file.Customs[ci+1:]...)
+		}
 		return true
 	}
 	if ei := findOriginalEditIndex(file, id); ei >= 0 {
@@ -261,7 +266,12 @@ func (s *Session) SetObjectFieldLevel(cfg *KindConfig, id, field string, level u
 		s.mu.Unlock()
 		return fmt.Errorf("unknown field %q (not in %s)", field, cfg.MetaDataFile)
 	}
-	prev, had := readObjectFieldLevel(s, cfg, id, fourCC, level)
+	// Read the prior value from the SAME table the edit will route to (mirrors
+	// SetObjectField). Reading per-(fourCC,level) across both tables could pick
+	// a different table than routeSkinTable resolves per-fourCC, desyncing the
+	// no-op check + oldVal capture from where the write lands.
+	skinTable := routeSkinTable(s, cfg, id, fourCC, meta)
+	prev, had := readFileFieldLevel(s.routedReadFile(cfg, skinTable), id, fourCC, level)
 	if had && prev == value {
 		s.mu.Unlock()
 		return nil // no-op

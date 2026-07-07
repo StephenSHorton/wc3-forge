@@ -255,6 +255,84 @@ func TestRemoveCustomObject_SkinMirrorCleanup(t *testing.T) {
 	}
 }
 
+// TestClearObjectField_Routing_DropsEmptySkinCustomRow guards the review's
+// Bug 1: undoing an art edit on a CUSTOM object must not leave a phantom empty
+// Custom row in the skin companion (which would bump the file off the lossless
+// copy-through). A PRIMARY custom row, by contrast, is the object definition
+// and must survive an empty-override state.
+func TestClearObjectField_Routing_DropsEmptySkinCustomRow(t *testing.T) {
+	stubUnitsBaseNetSafe(t)
+	cfg := UnitsConfig()
+	// Custom h000 exists only in the primary table (AddCustomObject).
+	s := &Session{
+		loaded: true,
+		unitMods: &w3objmod.File{Version: 3, Customs: []w3objmod.CustomObject{
+			{ID: "h000", BaseID: "hpea", Overrides: w3objmod.Overrides{}},
+		}},
+	}
+	// Set a netsafe art field → creates a skin custom mirror row.
+	if _, _, skin, err := setObjectField(s, cfg, "h000", "unam", "Sylvanas"); err != nil || !skin {
+		t.Fatalf("seed skin custom: skin=%v err=%v", skin, err)
+	}
+	if len(s.objectSkinMods["units"].Customs) != 1 {
+		t.Fatalf("expected 1 skin custom, got %+v", s.objectSkinMods["units"])
+	}
+	// Undo (clear, hadOverride was false) → the emptied skin custom row must go.
+	if _, err := clearObjectField(s, cfg, "h000", "unam"); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got := len(s.objectSkinMods["units"].Customs); got != 0 {
+		t.Errorf("phantom empty skin custom row not dropped: %d remain (%+v)",
+			got, s.objectSkinMods["units"].Customs)
+	}
+	// The primary custom (the object's definition) must NOT have been dropped
+	// even though its overrides are empty.
+	if len(s.unitMods.Customs) != 1 || s.unitMods.Customs[0].ID != "h000" {
+		t.Errorf("primary custom definition wrongly dropped: %+v", s.unitMods.Customs)
+	}
+}
+
+// TestSetObjectFieldLevel_NoopRead_MatchesWriteTable guards the review's Bug 2:
+// the leveled no-op read must consult the same table the write routes to. We
+// construct the pathological split — the same fourCC leveled in BOTH tables at
+// different levels — and confirm a level-3 edit is NOT wrongly suppressed as a
+// no-op by reading level 3 out of the wrong table.
+func TestSetObjectFieldLevel_NoopRead_MatchesWriteTable(t *testing.T) {
+	stubUnitsBaseNetSafe(t)
+	cfg := UnitsConfig()
+	// primary holds unam@2; skin holds unam@3 (a legacy/multi-tool split).
+	s := &Session{
+		loaded: true,
+		unitMods: &w3objmod.File{Version: 3, OriginalEdits: []w3objmod.OriginalEdit{
+			{BaseID: "hpea", Levels: []w3objmod.LevelOverride{{FourCC: "unam", Level: 2, Value: "P2"}}},
+		}},
+		objectSkinMods: map[string]*w3objmod.File{"units": {Version: 3, OriginalEdits: []w3objmod.OriginalEdit{
+			{BaseID: "hpea", Levels: []w3objmod.LevelOverride{{FourCC: "unam", Level: 3, Value: "S3"}}},
+		}}},
+	}
+	// routeSkinTable is per-fourCC: unam is present in primary (via @2) → routes
+	// to primary. The no-op read must therefore look at primary's level 3 (absent
+	// → not a no-op), NOT skin's "S3".
+	skin := routeSkinTable(s, cfg, "hpea", "unam", mustMeta(t, cfg))
+	if skin {
+		t.Fatal("routeSkinTable should route unam to primary (present there via level 2)")
+	}
+	prev, had := readFileFieldLevel(s.routedReadFile(cfg, skin), "hpea", "unam", 3)
+	if had {
+		t.Errorf("no-op read consulted the wrong table: found level-3 %q in the routed (primary) table", prev)
+	}
+}
+
+// mustMeta fetches the (stubbed) metadata for a kind or fails the test.
+func mustMeta(t *testing.T, cfg *KindConfig) *ObjectMetadata {
+	t.Helper()
+	_, meta, err := loadObjectBase(cfg)
+	if err != nil || meta == nil {
+		t.Fatalf("loadObjectBase(%s): meta=%v err=%v", cfg.Kind, meta, err)
+	}
+	return meta
+}
+
 // TestSetUnitField_NetSafe_SaveRoundTrip is the end-to-end public-API contract:
 // editing a netsafe field dirties ONLY the skin companion, Save writes
 // war3mapSkin.w3u to the map, and a reopen surfaces the override from the skin
