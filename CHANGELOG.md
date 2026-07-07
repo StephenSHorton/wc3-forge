@@ -4,6 +4,24 @@ All notable changes to wc3-forge are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-07-06
+
+### Fixed
+
+- **Object Editor edits to art/skin fields now round-trip through the World
+  Editor.** v1.0.5 taught wc3-forge to *read* the Reforged `war3mapSkin.w3*`
+  companion (Name, Model File, Icon, Tooltip); this release writes edits back to
+  the correct table. When you change an art/skin field, it now saves into
+  `war3mapSkin.w3*` — exactly where the vanilla World Editor keeps it — while
+  gameplay fields stay in `war3map.w3*`. A custom object's art edit creates its
+  matching row in the skin companion, and deleting a custom clears its skin data
+  too. Which table a field belongs to is read from the game's own metadata (the
+  `netsafe` flag), and a field a map already stores in one table is edited in
+  place — never migrated — so existing maps aren't churned.
+- **Custom units render their tint.** A unit with a Vertex Tinting Color
+  override (`Tinting Color 1/2/3` — red/green/blue) now shows that tint in the
+  viewport instead of rendering untinted.
+
 ## [1.0.5] - 2026-07-06
 
 ### Added
