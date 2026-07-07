@@ -95,6 +95,27 @@ func TestMergedObjects_SkinOverlay_FillsNameAndModel(t *testing.T) {
 	}
 }
 
+// TestUnitModelPath_UmdlSharedSlotOverride verifies the preview model honors a
+// Model File override stored under the FourCC-keyed "umdl" slot (the "file"
+// column is shared, so storeCol files umdl there, not under "file"), and still
+// falls through to the stock "file" column when there's no override.
+func TestUnitModelPath_UmdlSharedSlotOverride(t *testing.T) {
+	mdx, fb := unitModelPath(map[string]string{
+		"umdl": `war3mapImported\Sylvanas.mdl`,
+		"file": `units\Human\Peasant\Peasant`,
+	})
+	if mdx != `war3mapImported\Sylvanas.mdx` {
+		t.Errorf("umdl override ignored by preview: got %q", mdx)
+	}
+	if len(fb) == 0 || fb[0] != `war3mapImported\Sylvanas.mdl` {
+		t.Errorf("umdl override .mdl fallback wrong: got %v", fb)
+	}
+	mdx2, _ := unitModelPath(map[string]string{"file": `units\Human\Peasant\Peasant`})
+	if mdx2 != `units\Human\Peasant\Peasant.mdx` {
+		t.Errorf("stock file fallback broken: got %q", mdx2)
+	}
+}
+
 // TestMergedObjects_PrimaryWinsOverSkin locks in the precedence contract: when
 // the same field is set in BOTH tables, the primary war3map.w3u wins and the
 // skin only fills what the primary left unset. This keeps edits made in

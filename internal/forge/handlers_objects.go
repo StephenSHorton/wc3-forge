@@ -151,7 +151,13 @@ func normalizeIconPath(p string) string {
 // "war3mapImported/foo.mdl") so the .mdl fallback is load-bearing for
 // custom-content maps even when the asset handler's sibling swap fires.
 func unitModelPath(fields map[string]string) (string, []string) {
-	for _, k := range []string{"file", "file:hd", "file:sd"} {
+	// "umdl" first: the "file" column is shared across several unit FourCCs, so
+	// a per-map Model File override (umdl) is stored under its own FourCC-keyed
+	// slot (see ObjectMetadata.storeCol), not under "file". Without checking it,
+	// the preview shows the base model even though the override is loaded — the
+	// remaining half of the war3mapSkin.w3u custom-model fix. Falls through to
+	// the stock "file"/"file:hd"/"file:sd" columns when no override is present.
+	for _, k := range []string{"umdl", "file", "file:hd", "file:sd"} {
 		v := strings.TrimSpace(fields[k])
 		if v == "" {
 			continue
@@ -203,15 +209,15 @@ func unitIconArt(fields map[string]string) string {
 type objectsUnitsListEntity struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	Race      string `json:"race"`        // raw lowercase tag ("human"); frontend titlecases via shared lookup
-	RaceLabel string `json:"race_label"`  // pre-titled label ("Human")
-	Kind      string `json:"kind"`        // "unit" | "hero" | "building" | "special"
-	Category  string `json:"category"`    // human-readable bucket combining race + kind
+	Race      string `json:"race"`       // raw lowercase tag ("human"); frontend titlecases via shared lookup
+	RaceLabel string `json:"race_label"` // pre-titled label ("Human")
+	Kind      string `json:"kind"`       // "unit" | "hero" | "building" | "special"
+	Category  string `json:"category"`   // human-readable bucket combining race + kind
 	IsCustom  bool   `json:"is_custom"`
 	IsEdited  bool   `json:"is_edited"`
 	BaseID    string `json:"base_id,omitempty"` // only set for customs
-	Campaign  bool   `json:"campaign"`            // hides under "Campaign" subtree when true
-	IconArt   string `json:"icon_art"`            // command-button icon path stem
+	Campaign  bool   `json:"campaign"`          // hides under "Campaign" subtree when true
+	IconArt   string `json:"icon_art"`          // command-button icon path stem
 }
 
 type objectsUnitsGetParams struct {
@@ -231,7 +237,7 @@ type objectsUnitsField struct {
 	// safe to fall back to Display when an old client doesn't know about this
 	// field. Empty when Value is empty.
 	DisplayRaw string `json:"display_raw"`
-	Overridden bool   `json:"overridden"`   // true if this came from the per-map shadow
+	Overridden bool   `json:"overridden"` // true if this came from the per-map shadow
 	// Levels carries per-level override values for leveled (opt-format) kinds:
 	// level (1-based) → raw value. Empty/omitted for non-leveled fields and for
 	// fields with no per-level overrides. The base/level-0 value stays in Value.
