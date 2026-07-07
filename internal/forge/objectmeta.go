@@ -32,6 +32,17 @@ type ObjectFieldMeta struct {
 	MinVal      string // numeric constraints kept as strings — consumer parses on demand (and the column is often blank)
 	MaxVal      string
 
+	// NetSafe marks a field that Reforged's World Editor writes into the
+	// war3mapSkin.w3* companion table instead of the plain war3map.w3* table.
+	// It's the exact mechanism the vanilla editor uses to decide the split:
+	// the MetaData.slk `netsafe` column is non-empty and not "0" for art/skin
+	// fields (Name unam, Model File umdl, Icon uico, Tooltip utip, tint, …) and
+	// "0"/blank for gameplay/logic fields. NOT the same as Category — e.g.
+	// `unam` is Category "text" but netsafe (→ skin), while `ucbs` (combat
+	// tinting-ignore) is Category "art" but netsafe 0 (→ main). Edit routing
+	// keys on THIS, not Category. See routeSkinTable.
+	NetSafe bool
+
 	// Per-kind applicability flags. A single field row may carry several
 	// (e.g. a font-color field could be shared across units AND items).
 	// Each Applies* method ORs the relevant set so a kind's filter is one
@@ -195,6 +206,12 @@ func ParseObjectMetadata(data []byte) (*ObjectMetadata, error) {
 			Data:        data,
 			MinVal:      row.String("minval"),
 			MaxVal:      row.String("maxval"),
+			// netsafe: non-empty and not "0" → the field lives in the Reforged
+			// war3mapSkin.w3* companion. Absent column ⇒ every field false ⇒
+			// edits route to the plain table (the pre-Reforged behavior), which
+			// is a safe fallback since existing skin-table fields still route by
+			// presence (see routeSkinTable).
+			NetSafe: isNetSafe(row.String("netsafe")),
 			UseUnit:     row.String("useunit") == "1",
 			UseHero:     row.String("usehero") == "1",
 			UseBuilding: row.String("usebuilding") == "1",
@@ -231,6 +248,15 @@ func ParseObjectMetadata(data []byte) (*ObjectMetadata, error) {
 		}
 	}
 	return out, nil
+}
+
+// isNetSafe reports whether a MetaData.slk `netsafe` cell marks a skin-table
+// field. Reforged writes "1" for art/skin fields and "0" (or leaves it blank)
+// for gameplay fields; any non-"0" non-empty value is treated as netsafe so a
+// future "2"-style flag doesn't silently fall through to the plain table.
+func isNetSafe(v string) bool {
+	v = strings.TrimSpace(v)
+	return v != "" && v != "0"
 }
 
 // ParseUnitMetadata is the Phase-1b name retained as a thin wrapper over the

@@ -253,12 +253,20 @@ type Session struct {
 	// ("units", "items", ...). Reforged's World Editor splits per-map object
 	// overrides across two files per kind: war3map.w3* carries gameplay/logic
 	// edits, war3mapSkin.w3* carries the art/skin overrides (Name unam, Model
-	// File umdl, Icon uico, Tooltip utip). We load these read-only and merge
-	// them UNDER the primary shadow (primary wins; skin fills fields the primary
-	// doesn't set) so custom units surface their real name + model instead of
-	// the base type's. Never edited in place, so Save preserves them verbatim
-	// via the lossless copy-through — there is no dirty flag for them.
+	// File umdl, Icon uico, Tooltip utip). We load these and merge them UNDER
+	// the primary shadow (primary wins; skin fills fields the primary doesn't
+	// set) so custom units surface their real name + model instead of the base
+	// type's. Edit routing writes art/skin (netsafe) field edits back HERE (see
+	// routeSkinTable); a clean skin table is preserved verbatim by Save's
+	// lossless copy-through, a dirtied one is re-encoded (see dirtySkinMods).
 	objectSkinMods map[string]*w3objmod.File
+	// dirtySkinMods flags per-kind war3mapSkin.w3* companions that have pending
+	// edits, keyed by KindConfig.Kind. Populated once edit routing sends an
+	// art/skin field (netsafe) into the skin table (see routeSkinTable); a kind
+	// absent here (or false) means its skin companion is clean and Save
+	// preserves it verbatim via lossless copy-through. Mirrors the per-kind
+	// dirty* booleans, kept as a map because the storage above is a map.
+	dirtySkinMods map[string]bool
 	shadowMap      *shd.File   // war3map.shd
 	pathingMap     *wpm.File   // war3map.wpm
 	strings        wts.Strings // war3map.wts, for TRIGSTR_<n> resolution
@@ -801,6 +809,7 @@ func (s *Session) openWithSource(abs string, src fileSource, rawMapBytes []byte,
 	s.buffMods = buffMods
 	s.upgradeMods = upgradeMods
 	s.objectSkinMods = skinMods
+	s.dirtySkinMods = nil // freshly-loaded skin tables are clean
 	s.shadowMap = shadowMap
 	s.pathingMap = pathingMap
 	s.regions = regionsFile
@@ -960,6 +969,7 @@ func (s *Session) Close() {
 	s.buffMods = nil
 	s.upgradeMods = nil
 	s.objectSkinMods = nil
+	s.dirtySkinMods = nil
 	s.shadowMap = nil
 	s.pathingMap = nil
 	s.regions = nil
@@ -1921,42 +1931,35 @@ func (s *Session) SetObjectField(cfg *KindConfig, id, field, value string) error
 		s.mu.Unlock()
 		return fmt.Errorf("no map loaded")
 	}
-	mods := cfg.GetMods(s)
 	_, meta, _ := loadObjectBase(cfg)
 	fourCC := fieldKeyForMods(meta, field)
 	if fourCC == "" {
 		s.mu.Unlock()
 		return fmt.Errorf("unknown field %q (not in %s)", field, cfg.MetaDataFile)
 	}
-	var prev string
-	var had bool
-	if mods != nil {
-		if ci := findCustomIndex(mods, id); ci >= 0 {
-			prev, had = mods.Customs[ci].Overrides[fourCC]
-		} else if ei := findOriginalEditIndex(mods, id); ei >= 0 {
-			prev, had = mods.OriginalEdits[ei].Overrides[fourCC]
-		}
+	// Validate id is a real object BEFORE mutating. setObjectField does the
+	// same check, but it allocates a fresh shadow as a side-effect — we don't
+	// want a missing-id call to leave an empty File hanging around.
+	if _, _, ok := objectIdentity(s, cfg, id); !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("no %s object with id %q", cfg.Kind, id)
 	}
+	// Read the prior value from the table this edit routes to (an art/skin
+	// field lives in the war3mapSkin.w3* companion) so the no-op check + undo
+	// bookkeeping reflect the real on-disk state, not just the primary shadow.
+	skinTable := routeSkinTable(s, cfg, id, fourCC, meta)
+	prev, had := readBaseOverride(s.routedReadFile(cfg, skinTable), id, fourCC)
 	if had && prev == value {
 		s.mu.Unlock()
 		return nil // no-op
 	}
-	// Validate id is a real object BEFORE mutating. setObjectField does the
-	// same check, but it allocates a fresh shadow as a side-effect — we don't
-	// want a missing-id call to leave an empty File hanging around.
-	if mods == nil || findCustomIndex(mods, id) < 0 {
-		base, _, _ := loadObjectBase(cfg)
-		if base == nil || base.Rows[id] == nil {
-			s.mu.Unlock()
-			return fmt.Errorf("no %s object with id %q", cfg.Kind, id)
-		}
-	}
-	if _, _, err := setObjectField(s, cfg, id, field, value); err != nil {
+	_, _, skin, err := setObjectField(s, cfg, id, field, value)
+	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
 	wasDirty := s.anyDirtyLocked()
-	cfg.SetDirty(s, true)
+	markObjectDirty(s, cfg, skin)
 	s.recordCommand(&setObjectFieldCmd{
 		kind: cfg.Kind, id: id, column: field, oldVal: prev, newVal: value, hadOverride: had,
 	})
@@ -2037,14 +2040,17 @@ func (s *Session) DeleteCustomObject(cfg *KindConfig, id string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("no custom %s with id %q", cfg.Kind, id)
 	}
-	saved, ok := removeCustomObject(s, cfg, id)
+	saved, savedSkin, ok := removeCustomObject(s, cfg, id)
 	if !ok {
 		s.mu.Unlock()
 		return fmt.Errorf("no custom %s with id %q", cfg.Kind, id)
 	}
 	wasDirty := s.anyDirtyLocked()
 	cfg.SetDirty(s, true)
-	s.recordCommand(&deleteCustomObjectCmd{kind: cfg.Kind, saved: saved})
+	if savedSkin != nil {
+		s.setSkinDirtyLocked(cfg.Kind, true)
+	}
+	s.recordCommand(&deleteCustomObjectCmd{kind: cfg.Kind, saved: saved, savedSkin: savedSkin})
 	historyChanged := s.groupDepth == 0
 	s.mu.Unlock()
 	if !wasDirty {
@@ -2335,8 +2341,46 @@ func (s *Session) anyDirtyLocked() bool {
 		s.dirtyAbilityMods || s.dirtyBuffMods || s.dirtyDestructibleMods ||
 		s.dirtyDoodadMods || s.dirtyUpgradeMods ||
 		s.dirtyTriggers || s.mapHeaderScriptDirty || s.dirtyImports ||
-		s.dirtyRegions
+		s.dirtyRegions || s.anySkinDirtyLocked()
 }
+
+// anySkinDirtyLocked reports whether any per-kind war3mapSkin.w3* companion has
+// pending edits. Caller MUST hold s.mu (read or write).
+func (s *Session) anySkinDirtyLocked() bool {
+	for _, d := range s.dirtySkinMods {
+		if d {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureSkinModsLocked returns the kind's war3mapSkin.w3* shadow, allocating a
+// fresh empty File when the map had none. Caller MUST hold s.mu (write lock).
+func (s *Session) ensureSkinModsLocked(kind string) *w3objmod.File {
+	if s.objectSkinMods == nil {
+		s.objectSkinMods = map[string]*w3objmod.File{}
+	}
+	f := s.objectSkinMods[kind]
+	if f == nil {
+		f = &w3objmod.File{Version: 3}
+		s.objectSkinMods[kind] = f
+	}
+	return f
+}
+
+// setSkinDirtyLocked sets the per-kind skin dirty flag. Caller MUST hold s.mu
+// (write lock).
+func (s *Session) setSkinDirtyLocked(kind string, v bool) {
+	if s.dirtySkinMods == nil {
+		s.dirtySkinMods = map[string]bool{}
+	}
+	s.dirtySkinMods[kind] = v
+}
+
+// skinDirtyLocked reports whether the given kind's skin companion is dirty.
+// Caller MUST hold s.mu (read or write).
+func (s *Session) skinDirtyLocked(kind string) bool { return s.dirtySkinMods[kind] }
 
 // ---------------------------------------------------------------------------
 // Phase-1b compat shims — preserve the previous method names so external
@@ -2618,16 +2662,28 @@ func (s *Session) SaveWith(opts SaveOptions) (err error) {
 		if encErr != nil {
 			break
 		}
-		if !cfg.GetDirty(s) {
-			continue
-		}
-		mods := cfg.GetMods(s)
-		if mods == nil {
-			mods = &w3objmod.File{Version: 3}
-		}
 		c := cfg
-		data, err := w3objmod.Encode(mods, c.ShadowOpt, objFieldMaps[c])
-		addWrite(c.ShadowFile, data, err, func(s *Session, d bool) { c.SetDirty(s, d) }, nil)
+		// Primary war3map.w3* shadow.
+		if c.GetDirty(s) {
+			mods := c.GetMods(s)
+			if mods == nil {
+				mods = &w3objmod.File{Version: 3}
+			}
+			data, err := w3objmod.Encode(mods, c.ShadowOpt, objFieldMaps[c])
+			addWrite(c.ShadowFile, data, err, func(s *Session, d bool) { c.SetDirty(s, d) }, nil)
+		}
+		// Reforged war3mapSkin.w3* companion — only re-encoded when edit routing
+		// dirtied it (an art/skin field edit). A clean companion is left to the
+		// lossless copy-through so untouched skin tables round-trip verbatim.
+		if encErr == nil && s.skinDirtyLocked(c.Kind) {
+			skinMods := s.objectSkinMods[c.Kind]
+			if skinMods == nil {
+				skinMods = &w3objmod.File{Version: 3}
+			}
+			skinName := strings.Replace(c.ShadowFile, "war3map.", "war3mapSkin.", 1)
+			data, err := w3objmod.Encode(skinMods, c.ShadowOpt, objFieldMaps[c])
+			addWrite(skinName, data, err, func(s *Session, d bool) { s.setSkinDirtyLocked(c.Kind, d) }, nil)
+		}
 	}
 	// Trigger Editor encodes. Hand-rolled-script maps write the Map Header text
 	// straight to war3map.lua/.j; wtg-backed maps encode both wtg + wct (wtg

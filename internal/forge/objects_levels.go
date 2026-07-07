@@ -63,81 +63,98 @@ func removeLevelOverride(levels []w3objmod.LevelOverride, fourCC string, level u
 // doodads); for a non-opt kind a level>0 write still records but won't survive
 // Encode (no level slot on the wire), so callers should reject level>0 on a
 // non-opt kind upstream.
-func setObjectFieldLevel(s *Session, cfg *KindConfig, id, field string, level uint32, value string) (prevVal string, hadOverride bool, err error) {
+func setObjectFieldLevel(s *Session, cfg *KindConfig, id, field string, level uint32, value string) (prevVal string, hadOverride bool, skin bool, err error) {
 	if level == 0 {
 		return setObjectField(s, cfg, id, field, value)
 	}
-	mods := ensureObjectMods(s, cfg)
 	_, meta, _ := loadObjectBase(cfg)
 	fourCC := fieldKeyForMods(meta, field)
 	if fourCC == "" {
-		return "", false, fmt.Errorf("unknown field %q (not in %s)", field, cfg.MetaDataFile)
+		return "", false, false, fmt.Errorf("unknown field %q (not in %s)", field, cfg.MetaDataFile)
 	}
-
-	if ci := findCustomIndex(mods, id); ci >= 0 {
-		c := &mods.Customs[ci]
-		c.Levels, prevVal, hadOverride = upsertLevelOverride(c.Levels, fourCC, level, 0, value)
-		return prevVal, hadOverride, nil
+	isCustom, baseID, ok := objectIdentity(s, cfg, id)
+	if !ok {
+		return "", false, false, fmt.Errorf("no %s object with id %q", cfg.Kind, id)
 	}
-
-	base, _, _ := loadObjectBase(cfg)
-	if base == nil || base.Rows[id] == nil {
-		return "", false, fmt.Errorf("no %s object with id %q", cfg.Kind, id)
-	}
-	if ei := findOriginalEditIndex(mods, id); ei >= 0 {
-		e := &mods.OriginalEdits[ei]
-		e.Levels, prevVal, hadOverride = upsertLevelOverride(e.Levels, fourCC, level, 0, value)
-		return prevVal, hadOverride, nil
-	}
-	mods.OriginalEdits = append(mods.OriginalEdits, w3objmod.OriginalEdit{
-		BaseID: id,
-		Levels: []w3objmod.LevelOverride{{FourCC: fourCC, Level: level, Value: value}},
-	})
-	return "", false, nil
+	skin = routeSkinTable(s, cfg, id, fourCC, meta)
+	file := targetModFile(s, cfg, skin)
+	prev, had := putLevelOverride(file, id, baseID, fourCC, level, 0, value, isCustom)
+	return prev, had, skin, nil
 }
 
-// clearObjectFieldLevel removes a leveled override (used by Revert). Drops a
-// resulting empty OriginalEdit row so a saved file doesn't list a no-op.
-// Caller MUST hold s.mu (write lock). level==0 delegates to clearObjectField.
-func clearObjectFieldLevel(s *Session, cfg *KindConfig, id, field string, level uint32) error {
+// clearObjectFieldLevel removes a leveled override (used by Revert). It clears
+// from whichever table holds the field and returns which one so the caller
+// flips the matching dirty flag. Drops a resulting empty OriginalEdit row so a
+// saved file doesn't list a no-op. Caller MUST hold s.mu (write lock). level==0
+// delegates to clearObjectField.
+func clearObjectFieldLevel(s *Session, cfg *KindConfig, id, field string, level uint32) (skin bool, err error) {
 	if level == 0 {
 		return clearObjectField(s, cfg, id, field)
 	}
-	mods := cfg.GetMods(s)
-	if mods == nil {
-		return nil
-	}
 	_, meta, _ := loadObjectBase(cfg)
 	fourCC := fieldKeyForMods(meta, field)
 	if fourCC == "" {
-		return fmt.Errorf("unknown field %q", field)
+		return false, fmt.Errorf("unknown field %q", field)
 	}
-	if ci := findCustomIndex(mods, id); ci >= 0 {
-		mods.Customs[ci].Levels = removeLevelOverride(mods.Customs[ci].Levels, fourCC, level)
-		return nil
+	if clearLevelOverrideFromFile(cfg.GetMods(s), id, fourCC, level) {
+		return false, nil
 	}
-	if ei := findOriginalEditIndex(mods, id); ei >= 0 {
-		e := &mods.OriginalEdits[ei]
+	if clearLevelOverrideFromFile(s.objectSkinMods[cfg.Kind], id, fourCC, level) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// clearLevelOverrideFromFile removes the (fourCC, level) entry for `id` in
+// `file`, dropping a now-empty OriginalEdit row. Returns true if the (fourCC,
+// level) entry existed. Caller MUST hold s.mu (write lock).
+func clearLevelOverrideFromFile(file *w3objmod.File, id, fourCC string, level uint32) bool {
+	if file == nil {
+		return false
+	}
+	if ci := findCustomIndex(file, id); ci >= 0 {
+		if findLevelOverride(file.Customs[ci].Levels, fourCC, level) < 0 {
+			return false
+		}
+		file.Customs[ci].Levels = removeLevelOverride(file.Customs[ci].Levels, fourCC, level)
+		return true
+	}
+	if ei := findOriginalEditIndex(file, id); ei >= 0 {
+		e := &file.OriginalEdits[ei]
+		if findLevelOverride(e.Levels, fourCC, level) < 0 {
+			return false
+		}
 		e.Levels = removeLevelOverride(e.Levels, fourCC, level)
 		if len(e.Overrides) == 0 && len(e.Levels) == 0 {
-			mods.OriginalEdits = append(mods.OriginalEdits[:ei], mods.OriginalEdits[ei+1:]...)
+			file.OriginalEdits = append(file.OriginalEdits[:ei], file.OriginalEdits[ei+1:]...)
 		}
-		return nil
+		return true
 	}
-	return nil
+	return false
 }
 
 // readObjectFieldLevel returns the current value + had-entry flag for a
-// (id, field, level) tuple. level==0 reads the flat Overrides slot. Caller
-// MUST hold s.mu (read or write). Used by the public mutator for idempotence
-// + undo bookkeeping.
+// (id, field, level) tuple, consulting the primary shadow first and then the
+// war3mapSkin.w3* companion (an art/skin field lives in exactly one of them, so
+// the first hit is authoritative). level==0 reads the flat Overrides slot.
+// Caller MUST hold s.mu (read or write). Used by the public mutator for
+// idempotence + undo bookkeeping.
 func readObjectFieldLevel(s *Session, cfg *KindConfig, id, fourCC string, level uint32) (string, bool) {
-	mods := cfg.GetMods(s)
-	if mods == nil {
+	if v, ok := readFileFieldLevel(cfg.GetMods(s), id, fourCC, level); ok {
+		return v, true
+	}
+	return readFileFieldLevel(s.objectSkinMods[cfg.Kind], id, fourCC, level)
+}
+
+// readFileFieldLevel reads the (id, fourCC, level) value + presence from a
+// single File. level==0 reads the flat Overrides slot; level>0 the Levels list.
+// Caller MUST hold s.mu (read or write).
+func readFileFieldLevel(file *w3objmod.File, id, fourCC string, level uint32) (string, bool) {
+	if file == nil {
 		return "", false
 	}
-	if ci := findCustomIndex(mods, id); ci >= 0 {
-		c := &mods.Customs[ci]
+	if ci := findCustomIndex(file, id); ci >= 0 {
+		c := &file.Customs[ci]
 		if level == 0 {
 			v, ok := c.Overrides[fourCC]
 			return v, ok
@@ -147,8 +164,8 @@ func readObjectFieldLevel(s *Session, cfg *KindConfig, id, fourCC string, level 
 		}
 		return "", false
 	}
-	if ei := findOriginalEditIndex(mods, id); ei >= 0 {
-		e := &mods.OriginalEdits[ei]
+	if ei := findOriginalEditIndex(file, id); ei >= 0 {
+		e := &file.OriginalEdits[ei]
 		if level == 0 {
 			v, ok := e.Overrides[fourCC]
 			return v, ok
@@ -180,25 +197,29 @@ func (c *setObjectFieldLevelCmd) Label() string { return "Edit " + c.kind + " fi
 
 func (c *setObjectFieldLevelCmd) Apply(s *Session) error {
 	cfg := kindConfigFor(c.kind)
-	if _, _, err := setObjectFieldLevel(s, cfg, c.id, c.column, c.level, c.newVal); err != nil {
+	_, _, skin, err := setObjectFieldLevel(s, cfg, c.id, c.column, c.level, c.newVal)
+	if err != nil {
 		return err
 	}
-	cfg.SetDirty(s, true)
+	markObjectDirty(s, cfg, skin)
 	return nil
 }
 
 func (c *setObjectFieldLevelCmd) Revert(s *Session) error {
 	cfg := kindConfigFor(c.kind)
 	if !c.hadOverride {
-		if err := clearObjectFieldLevel(s, cfg, c.id, c.column, c.level); err != nil {
+		skin, err := clearObjectFieldLevel(s, cfg, c.id, c.column, c.level)
+		if err != nil {
 			return err
 		}
+		markObjectDirty(s, cfg, skin)
 	} else {
-		if _, _, err := setObjectFieldLevel(s, cfg, c.id, c.column, c.level, c.oldVal); err != nil {
+		_, _, skin, err := setObjectFieldLevel(s, cfg, c.id, c.column, c.level, c.oldVal)
+		if err != nil {
 			return err
 		}
+		markObjectDirty(s, cfg, skin)
 	}
-	cfg.SetDirty(s, true)
 	return nil
 }
 
@@ -247,20 +268,17 @@ func (s *Session) SetObjectFieldLevel(cfg *KindConfig, id, field string, level u
 	}
 	// Validate id before mutating (mirrors SetObjectField — don't leave an
 	// empty shadow for a bad id).
-	mods := cfg.GetMods(s)
-	if mods == nil || findCustomIndex(mods, id) < 0 {
-		base, _, _ := loadObjectBase(cfg)
-		if base == nil || base.Rows[id] == nil {
-			s.mu.Unlock()
-			return fmt.Errorf("no %s object with id %q", cfg.Kind, id)
-		}
+	if _, _, ok := objectIdentity(s, cfg, id); !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("no %s object with id %q", cfg.Kind, id)
 	}
-	if _, _, err := setObjectFieldLevel(s, cfg, id, field, level, value); err != nil {
+	_, _, skin, err := setObjectFieldLevel(s, cfg, id, field, level, value)
+	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
 	wasDirty := s.anyDirtyLocked()
-	cfg.SetDirty(s, true)
+	markObjectDirty(s, cfg, skin)
 	s.recordCommand(&setObjectFieldLevelCmd{
 		kind: cfg.Kind, id: id, column: field, level: level,
 		oldVal: prev, newVal: value, hadOverride: had,

@@ -90,90 +90,92 @@ func ensureObjectMods(s *Session, cfg *KindConfig) *w3objmod.File {
 // Apply/Revert so undo/redo replays the same code path.
 //
 // Caller MUST hold s.mu (write lock). Returns the prior override value +
-// "had override" flag so the caller can build the undo command.
+// "had override" flag (so the caller can build the undo command) plus which
+// table the edit landed in — `skin` true means the war3mapSkin.w3* companion
+// (an art/skin field), so the caller flips the skin dirty flag rather than the
+// primary one. See routeSkinTable for the primary-vs-skin decision.
 //
 // For STOCK rows (id matches a SLK row), the override lands in the
 // OriginalEdits table — creates a new edit-row entry if none exists yet.
-// For CUSTOM rows (id matches a custom row), the override lands on the
-// custom's own Overrides map.
+// For CUSTOM rows (id matches a custom row), the override lands on a Custom
+// row in the target table (created there if the skin companion didn't already
+// mirror the custom).
 //
 // Returns an error if id isn't a known object (neither stock nor custom) or
 // the field key doesn't translate to a metadata-known FourCC.
-func setObjectField(s *Session, cfg *KindConfig, id, field, value string) (prevVal string, hadOverride bool, err error) {
-	mods := ensureObjectMods(s, cfg)
+func setObjectField(s *Session, cfg *KindConfig, id, field, value string) (prevVal string, hadOverride bool, skin bool, err error) {
 	_, meta, _ := loadObjectBase(cfg)
 	fourCC := fieldKeyForMods(meta, field)
 	if fourCC == "" {
-		return "", false, fmt.Errorf("unknown field %q (not in %s)", field, cfg.MetaDataFile)
+		return "", false, false, fmt.Errorf("unknown field %q (not in %s)", field, cfg.MetaDataFile)
 	}
-
-	// Is `id` a custom? Update that custom's overrides directly.
-	if ci := findCustomIndex(mods, id); ci >= 0 {
-		c := &mods.Customs[ci]
-		if c.Overrides == nil {
-			c.Overrides = w3objmod.Overrides{}
-		}
-		prev, had := c.Overrides[fourCC]
-		c.Overrides[fourCC] = value
-		return prev, had, nil
+	isCustom, baseID, ok := objectIdentity(s, cfg, id)
+	if !ok {
+		return "", false, false, fmt.Errorf("no %s object with id %q", cfg.Kind, id)
 	}
-
-	// Is `id` a known stock row? Update the OriginalEdits table.
-	base, _, _ := loadObjectBase(cfg)
-	if base == nil || base.Rows[id] == nil {
-		return "", false, fmt.Errorf("no %s object with id %q", cfg.Kind, id)
-	}
-	if ei := findOriginalEditIndex(mods, id); ei >= 0 {
-		e := &mods.OriginalEdits[ei]
-		if e.Overrides == nil {
-			e.Overrides = w3objmod.Overrides{}
-		}
-		prev, had := e.Overrides[fourCC]
-		e.Overrides[fourCC] = value
-		return prev, had, nil
-	}
-	// First edit on this stock row — create the OriginalEdit entry.
-	mods.OriginalEdits = append(mods.OriginalEdits, w3objmod.OriginalEdit{
-		BaseID:    id,
-		Overrides: w3objmod.Overrides{fourCC: value},
-	})
-	return "", false, nil
+	skin = routeSkinTable(s, cfg, id, fourCC, meta)
+	file := targetModFile(s, cfg, skin)
+	prev, had := putBaseOverride(file, id, baseID, fourCC, value, isCustom)
+	return prev, had, skin, nil
 }
 
 // clearObjectField removes a field override (used by Revert of setObjectFieldCmd
-// when the prior state had no override). If the resulting OriginalEdit row
-// has no remaining overrides, the row itself is dropped — keeps the on-disk
-// table clean so a Save after a full undo doesn't ship empty edit rows.
+// when the prior state had no override). It clears from whichever table holds
+// the field — primary first, then the skin companion — and returns which one
+// so the caller flips the matching dirty flag. If the resulting OriginalEdit
+// row has no remaining overrides (base or level), the row itself is dropped so
+// a Save after a full undo doesn't ship empty edit rows.
 //
 // Caller MUST hold s.mu (write lock). Idempotent — clearing a field that
-// isn't present is a silent no-op.
-func clearObjectField(s *Session, cfg *KindConfig, id, field string) error {
-	mods := cfg.GetMods(s)
-	if mods == nil {
-		return nil
-	}
+// isn't present in either table is a silent no-op (skin=false).
+func clearObjectField(s *Session, cfg *KindConfig, id, field string) (skin bool, err error) {
 	_, meta, _ := loadObjectBase(cfg)
 	fourCC := fieldKeyForMods(meta, field)
 	if fourCC == "" {
-		return fmt.Errorf("unknown field %q", field)
+		return false, fmt.Errorf("unknown field %q", field)
 	}
-	if ci := findCustomIndex(mods, id); ci >= 0 {
-		delete(mods.Customs[ci].Overrides, fourCC)
-		return nil
+	// Clear from the table that actually holds the base override. A field is
+	// only ever in one table for a given id (routing keeps it there), so the
+	// first hit is authoritative.
+	if clearBaseOverrideFromFile(cfg.GetMods(s), id, fourCC) {
+		return false, nil
 	}
-	if ei := findOriginalEditIndex(mods, id); ei >= 0 {
-		e := &mods.OriginalEdits[ei]
+	if clearBaseOverrideFromFile(s.objectSkinMods[cfg.Kind], id, fourCC) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// clearBaseOverrideFromFile deletes the base-slot override for (id, fourCC) in
+// `file`, dropping a now-empty OriginalEdit row. Returns true if it removed
+// anything. Caller MUST hold s.mu (write lock).
+func clearBaseOverrideFromFile(file *w3objmod.File, id, fourCC string) bool {
+	if file == nil {
+		return false
+	}
+	if ci := findCustomIndex(file, id); ci >= 0 {
+		if _, had := file.Customs[ci].Overrides[fourCC]; !had {
+			return false
+		}
+		delete(file.Customs[ci].Overrides, fourCC)
+		return true
+	}
+	if ei := findOriginalEditIndex(file, id); ei >= 0 {
+		e := &file.OriginalEdits[ei]
+		if _, had := e.Overrides[fourCC]; !had {
+			return false
+		}
 		delete(e.Overrides, fourCC)
-		if len(e.Overrides) == 0 {
+		if len(e.Overrides) == 0 && len(e.Levels) == 0 {
 			// Drop the empty edit row so the saved file doesn't list a no-op.
-			mods.OriginalEdits = append(
-				mods.OriginalEdits[:ei],
-				mods.OriginalEdits[ei+1:]...,
+			file.OriginalEdits = append(
+				file.OriginalEdits[:ei],
+				file.OriginalEdits[ei+1:]...,
 			)
 		}
-		return nil
+		return true
 	}
-	return nil
+	return false
 }
 
 // addCustomObject appends a new custom row with empty Overrides. Caller MUST
@@ -205,30 +207,48 @@ func addCustomObject(s *Session, cfg *KindConfig, newID, baseID string) error {
 	return nil
 }
 
-// removeCustomObject deletes the custom with the given ID. Caller MUST hold
-// s.mu (write lock). Returns the deleted CustomObject (for undo restore) and
-// a flag indicating whether the deletion happened (false = not found).
-func removeCustomObject(s *Session, cfg *KindConfig, id string) (w3objmod.CustomObject, bool) {
+// removeCustomObject deletes the custom with the given ID from the primary
+// shadow AND, if present, its mirror in the war3mapSkin.w3* companion (so a
+// deleted object doesn't orphan its art/skin overrides). Caller MUST hold s.mu
+// (write lock). Returns the deleted primary CustomObject, the deleted skin
+// CustomObject (nil when the companion had no mirror), and a flag indicating
+// whether the primary deletion happened (false = not found). The caller flips
+// the skin dirty flag when savedSkin != nil.
+func removeCustomObject(s *Session, cfg *KindConfig, id string) (saved w3objmod.CustomObject, savedSkin *w3objmod.CustomObject, ok bool) {
 	mods := cfg.GetMods(s)
 	if mods == nil {
-		return w3objmod.CustomObject{}, false
+		return w3objmod.CustomObject{}, nil, false
 	}
 	ci := findCustomIndex(mods, id)
 	if ci < 0 {
-		return w3objmod.CustomObject{}, false
+		return w3objmod.CustomObject{}, nil, false
 	}
-	saved := mods.Customs[ci]
+	saved = mods.Customs[ci]
 	mods.Customs = append(mods.Customs[:ci], mods.Customs[ci+1:]...)
-	return saved, true
+
+	if skin := s.objectSkinMods[cfg.Kind]; skin != nil {
+		if si := findCustomIndex(skin, id); si >= 0 {
+			sc := skin.Customs[si]
+			savedSkin = &sc
+			skin.Customs = append(skin.Customs[:si], skin.Customs[si+1:]...)
+		}
+	}
+	return saved, savedSkin, true
 }
 
-// reinsertCustomObject re-appends a previously-deleted custom (used by Revert
-// of deleteCustomObjectCmd). Caller MUST hold s.mu (write lock). The original
-// slice position isn't preserved — Customs is an unordered set in practice
-// (HiveWE writes them in iteration order), so appending is fine.
-func reinsertCustomObject(s *Session, cfg *KindConfig, saved w3objmod.CustomObject) {
+// reinsertCustomObject re-appends a previously-deleted custom to the primary
+// shadow and, when savedSkin != nil, its mirror to the war3mapSkin.w3*
+// companion (used by Revert of deleteCustomObjectCmd). Caller MUST hold s.mu
+// (write lock). The original slice position isn't preserved — Customs is an
+// unordered set in practice (HiveWE writes them in iteration order), so
+// appending is fine.
+func reinsertCustomObject(s *Session, cfg *KindConfig, saved w3objmod.CustomObject, savedSkin *w3objmod.CustomObject) {
 	mods := ensureObjectMods(s, cfg)
 	mods.Customs = append(mods.Customs, saved)
+	if savedSkin != nil {
+		skin := s.ensureSkinModsLocked(cfg.Kind)
+		skin.Customs = append(skin.Customs, *savedSkin)
+	}
 }
 
 // allocateCustomID picks the next-free custom FourCC, modeled on HiveWE's

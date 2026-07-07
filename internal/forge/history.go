@@ -329,25 +329,29 @@ func (c *setObjectFieldCmd) Label() string { return "Edit " + c.kind + " field" 
 
 func (c *setObjectFieldCmd) Apply(s *Session) error {
 	cfg := kindConfigFor(c.kind)
-	if _, _, err := setObjectField(s, cfg, c.id, c.column, c.newVal); err != nil {
+	_, _, skin, err := setObjectField(s, cfg, c.id, c.column, c.newVal)
+	if err != nil {
 		return err
 	}
-	cfg.SetDirty(s, true)
+	markObjectDirty(s, cfg, skin)
 	return nil
 }
 
 func (c *setObjectFieldCmd) Revert(s *Session) error {
 	cfg := kindConfigFor(c.kind)
 	if !c.hadOverride {
-		if err := clearObjectField(s, cfg, c.id, c.column); err != nil {
+		skin, err := clearObjectField(s, cfg, c.id, c.column)
+		if err != nil {
 			return err
 		}
+		markObjectDirty(s, cfg, skin)
 	} else {
-		if _, _, err := setObjectField(s, cfg, c.id, c.column, c.oldVal); err != nil {
+		_, _, skin, err := setObjectField(s, cfg, c.id, c.column, c.oldVal)
+		if err != nil {
 			return err
 		}
+		markObjectDirty(s, cfg, skin)
 	}
-	cfg.SetDirty(s, true)
 	return nil
 }
 
@@ -378,8 +382,11 @@ func (c *addCustomObjectCmd) Apply(s *Session) error {
 
 func (c *addCustomObjectCmd) Revert(s *Session) error {
 	cfg := kindConfigFor(c.kind)
-	_, _ = removeCustomObject(s, cfg, c.newID)
+	_, savedSkin, _ := removeCustomObject(s, cfg, c.newID)
 	cfg.SetDirty(s, true)
+	if savedSkin != nil {
+		s.setSkinDirtyLocked(cfg.Kind, true)
+	}
 	return nil
 }
 
@@ -387,30 +394,42 @@ func (c *addCustomObjectCmd) Affected(s *Session) []EntityChange {
 	return []EntityChange{{Kind: c.kind + "_mod", ID: 0, Field: "customs"}}
 }
 
-// deleteCustomObjectCmd removes a custom row from the shadow. We snapshot
-// the full CustomObject (id, base id, overrides) so Revert can restore the
-// row's overrides verbatim — without the snapshot, Undo would re-create the
-// shell but lose any per-field edits the user had committed.
+// deleteCustomObjectCmd removes a custom row from the shadow. We snapshot the
+// full CustomObject (id, base id, overrides) — plus its war3mapSkin.w3* mirror
+// (savedSkin, nil when there is none) — so Revert restores both tables verbatim.
+// Without the snapshot, Undo would re-create the shell but lose any per-field
+// edits (gameplay OR art/skin) the user had committed.
 type deleteCustomObjectCmd struct {
-	kind  string
-	saved w3objmod.CustomObject
+	kind      string
+	saved     w3objmod.CustomObject
+	savedSkin *w3objmod.CustomObject
 }
 
 func (c *deleteCustomObjectCmd) Label() string { return "Delete custom " + c.kind }
 
 func (c *deleteCustomObjectCmd) Apply(s *Session) error {
 	cfg := kindConfigFor(c.kind)
-	if _, ok := removeCustomObject(s, cfg, c.saved.ID); !ok {
+	_, savedSkin, ok := removeCustomObject(s, cfg, c.saved.ID)
+	if !ok {
 		return fmt.Errorf("custom %q not found", c.saved.ID)
 	}
+	// Keep the snapshot current with what Apply actually removed so a
+	// later Revert restores the right skin mirror even across redo.
+	c.savedSkin = savedSkin
 	cfg.SetDirty(s, true)
+	if savedSkin != nil {
+		s.setSkinDirtyLocked(cfg.Kind, true)
+	}
 	return nil
 }
 
 func (c *deleteCustomObjectCmd) Revert(s *Session) error {
 	cfg := kindConfigFor(c.kind)
-	reinsertCustomObject(s, cfg, c.saved)
+	reinsertCustomObject(s, cfg, c.saved, c.savedSkin)
 	cfg.SetDirty(s, true)
+	if c.savedSkin != nil {
+		s.setSkinDirtyLocked(cfg.Kind, true)
+	}
 	return nil
 }
 
