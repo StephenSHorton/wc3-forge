@@ -547,17 +547,19 @@ var doodadFieldMap = map[string]string{
 // their SLK column names. We only consume display-name overrides for now;
 // expand as the renderer surfaces more fields.
 var unitFieldMap = map[string]string{
-	"unam": "name", // unit name override (w3u)
-	"unsf": "editorsuffix",
-	"utub": "tilesets",
-	"urac": "race",
-	"ucla": "unitclass",
-	"unam2": "name", // item name (w3t variant)
+	"unam":      "name",       // unit name override (w3u)
+	"umdl":      "file",       // unit model-file override (w3u / war3mapSkin.w3u) — custom skins
+	"usca":      "modelscale", // unit scaling value (Art - Scaling Value)
+	"unsf":      "editorsuffix",
+	"utub":      "tilesets",
+	"urac":      "race",
+	"ucla":      "unitclass",
+	"unam2":     "name", // item name (w3t variant)
 	"unam_item": "name",
-	"unin": "description",
-	"inam": "name", // item name (w3t)
-	"uico": "art", // unit command-button icon override (w3u)
-	"iico": "art", // item icon override (w3t)
+	"unin":      "description",
+	"inam":      "name", // item name (w3t)
+	"uico":      "art",  // unit command-button icon override (w3u)
+	"iico":      "art",  // item icon override (w3t)
 }
 
 func resolveColumn(modID string, fields map[string]string) string {
@@ -608,6 +610,20 @@ func applyUnitOverrides(base UnitTypeInfo, ov w3objmod.Overrides, mapStrings wts
 		switch strings.ToLower(col) {
 		case "name":
 			out.Name = resolveDisplay(val, mapStrings)
+		case "file":
+			// Custom units can point at a different model — a per-map skin swap
+			// (e.g. a Peasant-based unit using the Sylvanas model). Without this
+			// the viewport falls back to the base type's model, the exact
+			// mismatch users see vs the World Editor. UnitTypeInfo.File is a stem
+			// (placeUnit re-appends ".mdx" via mdxPath), so strip any extension
+			// the override carries. Empty override keeps the base model.
+			if s := trimModelExt(strings.TrimSpace(val)); s != "" {
+				out.File = s
+			}
+		case "modelscale":
+			// Art - Scaling Value (usca). Only applies when the override is
+			// present; absent leaves the stock scale (default 1).
+			out.ModelScale = parseFloat(val, base.ModelScale)
 		case "art":
 			// Per-map custom units may declare their own command-button icon
 			// (war3map.w3u uart field). Lets a map override the Footman
@@ -616,6 +632,19 @@ func applyUnitOverrides(base UnitTypeInfo, ov w3objmod.Overrides, mapStrings wts
 		}
 	}
 	return out
+}
+
+// trimModelExt strips a trailing .mdx/.mdl (case-insensitive) so a model-file
+// override collapses to the extension-less stem UnitTypeInfo.File holds
+// (placeUnit re-appends ".mdx"). Leaves a stem without extension untouched.
+func trimModelExt(s string) string {
+	if i := strings.LastIndexByte(s, '.'); i > 0 {
+		switch strings.ToLower(s[i:]) {
+		case ".mdx", ".mdl":
+			return s[:i]
+		}
+	}
+	return s
 }
 
 func parseInt(s string, fallback int) int {
@@ -673,36 +702,57 @@ func mergeDoodadIndex() map[string]DoodadTypeInfo {
 	return out
 }
 
-// mergeUnitIndex applies per-map w3u (units) + w3t (items) modifications.
-// Currently only display-name overrides flow through — the renderer doesn't
-// consume per-unit SLK overrides for its other fields yet.
+// mergeUnitIndex applies per-map w3u (units) + w3t (items) modifications,
+// including their Reforged war3mapSkin.w3* companions. Display name, model
+// file (umdl), model scale (usca), and icon (uico) overrides flow through so
+// custom-skin units render with their real model instead of the base type's.
 func mergeUnitIndex() map[string]UnitTypeInfo {
 	out := make(map[string]UnitTypeInfo, len(unitIndex))
 	for k, v := range unitIndex {
 		out[k] = v
 	}
 	mapStrings := forge.Current.Strings()
+	// Apply the war3mapSkin.w3* companion first (lower precedence), then the
+	// primary war3map.w3* on top — a field set in both resolves to the primary
+	// value, while art/skin fields present only in the skin table (the common
+	// Reforged case: custom name/model/icon) still flow through. Mirrors the
+	// primary-wins merge in forge.MergedObjects.
+	for _, mods := range []*w3objmod.File{forge.Current.UnitSkinMods(), forge.Current.ItemSkinMods()} {
+		applyUnitModsLayer(out, mods, mapStrings)
+	}
 	for _, mods := range []*w3objmod.File{forge.Current.UnitMods(), forge.Current.ItemMods()} {
-		if mods == nil {
+		applyUnitModsLayer(out, mods, mapStrings)
+	}
+	return out
+}
+
+// applyUnitModsLayer folds one w3objmod shadow (a primary war3map.w3* table or
+// its war3mapSkin.w3* companion) into the unit type index. Customs apply onto
+// the entry a prior layer already minted (so skin-then-primary accumulates)
+// or, on first sight, onto a fresh copy of their base type.
+func applyUnitModsLayer(out map[string]UnitTypeInfo, mods *w3objmod.File, mapStrings wts.Strings) {
+	if mods == nil {
+		return
+	}
+	for _, edit := range mods.OriginalEdits {
+		base, ok := out[edit.BaseID]
+		if !ok {
 			continue
 		}
-		for _, edit := range mods.OriginalEdits {
-			base, ok := out[edit.BaseID]
-			if !ok {
-				continue
-			}
-			out[edit.BaseID] = applyUnitOverrides(base, edit.Overrides, mapStrings)
-		}
-		for _, c := range mods.Customs {
-			base, ok := out[c.BaseID]
-			if !ok {
+		out[edit.BaseID] = applyUnitOverrides(base, edit.Overrides, mapStrings)
+	}
+	for _, c := range mods.Customs {
+		cur, ok := out[c.ID]
+		if !ok {
+			base, bok := out[c.BaseID]
+			if !bok {
 				log.Printf("typeindex: custom unit %s missing base %s; skipping", c.ID, c.BaseID)
 				continue
 			}
-			out[c.ID] = applyUnitOverrides(base, c.Overrides, mapStrings)
+			cur = base
 		}
+		out[c.ID] = applyUnitOverrides(cur, c.Overrides, mapStrings)
 	}
-	return out
 }
 
 // GetUnitTypeIndex returns the full FourCC → UnitTypeInfo map. Per-map

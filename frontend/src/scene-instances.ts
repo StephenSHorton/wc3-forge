@@ -1682,8 +1682,12 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
     hoveredUnit = null
   }
 
-  // Unit type index: stock-only and process-stable (we don't yet apply
-  // per-map w3u modifications), so cache for process lifetime.
+  // Unit type index: carries per-map w3u + war3mapSkin.w3u overrides (display
+  // name, model file, icon), so it is per-MAP, not process-stable. loadMap()
+  // nulls the cache below so the next getUnitTypes() re-fetches the current
+  // map's merged index; within a single load the cache lets concurrent
+  // placeUnit calls share one fetch. (Mirrors getDoodadTypes, which re-fetches
+  // per load for the same reason.)
   let unitTypeIndexCache: Record<string, UnitTypeInfo> | null = null
   async function getUnitTypes(): Promise<Record<string, UnitTypeInfo>> {
     if (!unitTypeIndexCache) {
@@ -3509,6 +3513,11 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
       // tallies accumulated up to the failure point.
       sceneDiag.loadingMap = true
       sceneDiag.loadGeneration++
+      // The unit type index is per-map (it folds in this map's w3u +
+      // war3mapSkin.w3u name/model/icon overrides), so drop the prior map's
+      // cached copy — the getUnitTypes() call below re-fetches the current
+      // map's merged index.
+      unitTypeIndexCache = null
       const loadStartTs = performance.now()
       try {
       clearInstances()
