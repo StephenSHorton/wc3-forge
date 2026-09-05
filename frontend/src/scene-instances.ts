@@ -29,6 +29,7 @@
 
 import * as MV_ns from 'mdx-m3-viewer'
 import { flog, flogDebug, flogError, flogWarn, getLogLevel } from './debuglog'
+import { isTypingTarget } from './typing-target'
 import { collectDiag, registerDiag } from './diag-registry'
 import { patchMdxParser } from './mdx-parser-patch'
 import {
@@ -2937,15 +2938,11 @@ export function createScene(canvas: HTMLCanvasElement, reforged: boolean = false
 
   function onWindowKeyDown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
-    // Don't steal Escape from text inputs / contenteditable / form controls.
-    // Future inline-edit fields, search boxes, or modals need to handle their
-    // own Escape (close themselves) without losing the viewport selection too.
-    const a = document.activeElement as HTMLElement | null
-    if (a) {
-      const tag = a.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      if (a.isContentEditable) return
-    }
+    // Don't steal Escape from text inputs / Monaco / contenteditable / form
+    // controls. Future inline-edit fields, search boxes, or modals need to
+    // handle their own Escape (close themselves) without losing the viewport
+    // selection too.
+    if (isTypingTarget(e.target)) return
     // Mid-stroke Escape closes the terrain brush stroke (ends the undo group)
     // so the partial stroke is committed as one step rather than left dangling.
     if (brushStroking) {

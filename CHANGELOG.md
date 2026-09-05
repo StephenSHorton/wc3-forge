@@ -4,6 +4,18 @@ All notable changes to wc3-forge are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`f` types in the Trigger Editor script pane.** The Frame Selection
+  hotkey (`f`) no longer swallows the key while a custom-script (or any
+  Monaco) editor is focused, so you can type `function` instead of
+  `unction`. The input-focus gate now recognizes Monaco's EditContext
+  surface — not just `<input>` / `<textarea>` — and viewport hotkeys
+  (`f`, `m`, `1`/`2`/`3`, Tab, Delete) stay quiet while an editor dialog
+  is open. ([#34](https://github.com/StephenSHorton/wc3-forge/issues/34))
+
 ## [1.0.6] - 2026-07-06
 
 ### Fixed
