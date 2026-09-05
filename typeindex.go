@@ -141,6 +141,7 @@ func readBaseAsset(name string) ([]byte, bool, error) {
 	if err != nil || c == nil {
 		return nil, false, err
 	}
+	applyMapTileset(c)
 	return c.ReadFile(clean)
 }
 

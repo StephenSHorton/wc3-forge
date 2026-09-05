@@ -4,6 +4,23 @@ All notable changes to wc3-forge are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Water missing on latest-Reforged maps.** The Terrain Cell inspector could
+  say "Has water: yes" while the viewport drew none. Two causes, both
+  triggered by maps saved in current Reforged World Editor:
+  - The water mesh used 16-bit indices and **bailed out entirely** on maps
+    with more than 65535 corners (anything around 256×256 and up). Water
+    now uses 32-bit indices, same as terrain and pathing.
+  - CASC lookups never tried the per-tileset `_tilesets/<letter>.w3mod:`
+    mounts that patch 2.0.3+ stores animated water (and other tileset art)
+    under, so frames 404'd and the leftover color-only plane was nearly
+    invisible. Lookups now follow HiveWE's tileset-mount order, and water
+    textures are requested as `.dds` (with `.blp` sibling fallback) like
+    the rest of the terrain.
+
 ## [1.0.6] - 2026-07-06
 
 ### Fixed

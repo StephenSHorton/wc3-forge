@@ -123,6 +123,12 @@ type Storage struct {
 	// to either the SD or HD asset depending on which mount we hit first.
 	// Default (false) prefers SD assets. Use SetReforged to flip.
 	reforged bool
+	// tileset is the current map's w3e tileset letter ('L', 'A', 'X', …).
+	// When non-zero, ReadFile tries the per-tileset CASC mounts
+	// (`_tilesets/<letter>.w3mod:`) that Reforged 2.0.3+ uses for terrain
+	// art — including animated water frames — before the generic mounts.
+	// Zero means "no map loaded"; prefixes match the legacy lists.
+	tileset byte
 }
 
 // SetReforged sets the HD/SD preference. Concurrent-safe.
@@ -137,6 +143,22 @@ func (s *Storage) Reforged() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reforged
+}
+
+// SetTileset records the current map's tileset letter so ReadFile can try
+// `_tilesets/<letter>.w3mod:` mounts. Pass 0 to clear (no map loaded).
+// Concurrent-safe.
+func (s *Storage) SetTileset(ts byte) {
+	s.mu.Lock()
+	s.tileset = ts
+	s.mu.Unlock()
+}
+
+// Tileset returns the current map tileset letter, or 0 if none is set.
+func (s *Storage) Tileset() byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tileset
 }
 
 // Open returns a Storage for the install at the given path. The path
@@ -195,7 +217,8 @@ func (s *Storage) Close() error {
 
 // ReadFile fetches one file by its WC3-relative path (e.g.
 // "units/human/footman/footman.mdx" or its backslash equivalent).
-// We try the standard set of CASC mount prefixes in order: `war3.w3mod:`
+// We try CASC mount prefixes in order (see mountPrefixes): optional
+// per-tileset `_tilesets/<letter>.w3mod:` mounts, then `war3.w3mod:`
 // (the main stock-asset mount), then localized + HD variants. Returns
 // (nil, false, nil) if the name isn't found in any mount.
 //
@@ -209,10 +232,9 @@ func (s *Storage) Close() error {
 func (s *Storage) ReadFile(name string) ([]byte, bool, error) {
 	// Normalize to backslash-style; CASC stores paths with `\`.
 	bs := strings.ReplaceAll(name, "/", "\\")
-	prefixes := sdCascPrefixes
-	if s.Reforged() {
-		prefixes = hdCascPrefixes
-	}
+	s.mu.Lock()
+	prefixes := mountPrefixes(s.reforged, s.tileset)
+	s.mu.Unlock()
 	for _, prefix := range prefixes {
 		full := prefix + bs
 		data, ok, err := s.openOne(full)
@@ -224,6 +246,51 @@ func (s *Storage) ReadFile(name string) ([]byte, bool, error) {
 		}
 	}
 	return nil, false, nil
+}
+
+// tilesetMountLetter lowercases a w3e tileset byte to the letter CASC uses
+// in `_tilesets/<letter>.w3mod:` (listfile entries are lowercase). Returns
+// empty when ts is unset or not an ASCII letter.
+func tilesetMountLetter(ts byte) string {
+	if ts >= 'A' && ts <= 'Z' {
+		ts += 'a' - 'A'
+	}
+	if ts < 'a' || ts > 'z' {
+		return ""
+	}
+	return string([]byte{ts})
+}
+
+// mountPrefixes is the ordered CASC TVFS prefix list for one ReadFile.
+// tileset==0 reproduces sdCascPrefixes / hdCascPrefixes exactly so
+// pre-map-load lookups and existing tests stay byte-identical.
+//
+// Reforged 2.0.3+ stores tileset-specific terrain art (ground textures,
+// cliff textures, animated water frames) under
+// `war3.w3mod:_hd.w3mod:_tilesets/<letter>.w3mod:` (HD) and
+// `war3.w3mod:_tilesets/<letter>.w3mod:` (SD). HiveWE's hierarchy.ixx
+// tries those mounts first; without them, water/terrain requests fall
+// through to a generic (or missing) file and the viewport looks dry even
+// though war3map.w3e still has the water flag set.
+func mountPrefixes(reforged bool, tileset byte) []string {
+	base := sdCascPrefixes
+	if reforged {
+		base = hdCascPrefixes
+	}
+	letter := tilesetMountLetter(tileset)
+	if letter == "" {
+		return base
+	}
+	hdTs := "war3.w3mod:_hd.w3mod:_tilesets/" + letter + ".w3mod:"
+	sdTs := "war3.w3mod:_tilesets/" + letter + ".w3mod:"
+	head := []string{sdTs, hdTs}
+	if reforged {
+		head = []string{hdTs, sdTs}
+	}
+	out := make([]string, 0, 2+len(base))
+	out = append(out, head...)
+	out = append(out, base...)
+	return out
 }
 
 // sdCascPrefixes are the CASC mount paths we try in SD (Classic) mode.

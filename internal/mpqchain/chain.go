@@ -244,6 +244,10 @@ func (c *Chain) Reforged() bool {
 	return c.reforged
 }
 
+// SetTileset is a no-op on Classic MPQ installs (no per-tileset mounts).
+// It exists to satisfy the stock-source interface.
+func (c *Chain) SetTileset(byte) {}
+
 // Close releases every mounted archive. Idempotent; safe to call more than
 // once (it nils the archive slice, so a second call is a no-op).
 func (c *Chain) Close() error {
