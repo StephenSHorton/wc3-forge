@@ -70,7 +70,16 @@ var ErrMPQRepackFailed = errors.New("MPQ archive repack failed")
 type folderSource struct{ root string }
 
 func (f folderSource) read(name string) ([]byte, bool, error) {
-	b, err := os.ReadFile(filepath.Join(f.root, name))
+	// Same resolve() as write: WC3 archive paths use backslashes
+	// (`war3mapImported\foo.blp`). filepath.Join on POSIX treats `\` as a
+	// literal character, so joining the raw name looks for a file that
+	// write() never created (it already FromSlash'd). Darwin CI then saw
+	// AddImport succeed and ReadFile/ListImports report the file missing.
+	dst, err := f.resolve(name)
+	if err != nil {
+		return nil, false, err
+	}
+	b, err := os.ReadFile(dst)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
@@ -115,13 +124,15 @@ func (f folderSource) write(name string, data []byte) error {
 
 // delete removes the named file under f.root. Returns nil if the file is
 // absent — callers (Convert-to-Lua) treat the operation as idempotent.
-// Same path-traversal defense as write.
+// Same resolve() as write/read so WC3 backslash paths land on the file
+// write() actually created, and so `subdir\..\..\evil` is rejected on POSIX
+// (filepath.Clean does not treat `\` as a separator).
 func (f folderSource) delete(name string) error {
-	clean := filepath.Clean(name)
-	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") || strings.Contains(clean, string(filepath.Separator)+"..") {
-		return fmt.Errorf("delete %q: unsafe path", name)
+	dst, err := f.resolve(name)
+	if err != nil {
+		return err
 	}
-	err := os.Remove(filepath.Join(f.root, clean))
+	err = os.Remove(dst)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -267,9 +278,9 @@ type Session struct {
 	// preserves it verbatim via lossless copy-through. Mirrors the per-kind
 	// dirty* booleans, kept as a map because the storage above is a map.
 	dirtySkinMods map[string]bool
-	shadowMap      *shd.File   // war3map.shd
-	pathingMap     *wpm.File   // war3map.wpm
-	strings        wts.Strings // war3map.wts, for TRIGSTR_<n> resolution
+	shadowMap     *shd.File   // war3map.shd
+	pathingMap    *wpm.File   // war3map.wpm
+	strings       wts.Strings // war3map.wts, for TRIGSTR_<n> resolution
 	// infoTokens maps a Map Info Description field key ("name"/"author"/
 	// "description"/"suggestedPlayers") to its ORIGINAL "TRIGSTR_<n>" token,
 	// captured at Open before ResolveStrings resolved the field to its display
