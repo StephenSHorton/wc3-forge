@@ -30,8 +30,25 @@ type stockSource interface {
 	ListByPrefix(prefix string) ([]string, error)
 	SetReforged(b bool)
 	Reforged() bool
+	SetTileset(ts byte)
 	Close() error
 }
+
+// applyMapTileset points the stock source at the loaded map's w3e tileset
+// letter so CASC ReadFile tries `_tilesets/<letter>.w3mod:` mounts. Classic
+// MPQ chains no-op this. Safe when no map is loaded (tileset 0).
+func applyMapTileset(c stockSource) {
+	var ts byte
+	if t := forge.Current.Terrain(); t != nil {
+		ts = t.Tileset
+	}
+	c.SetTileset(ts)
+}
+
+var (
+	_ stockSource = (*casc.Storage)(nil)
+	_ stockSource = (*mpqchain.Chain)(nil)
+)
 
 // assetHandler serves /asset/<path> requests from Go-side asset sources.
 // mdx-m3-viewer's pathSolver returns "/asset/<src>" strings; the viewer
@@ -209,6 +226,7 @@ func (h *assetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// CASC fallback for stock WC3 assets — only after exhausting the map.
 	if c, err := getCASC(); err == nil && c != nil {
+		applyMapTileset(c)
 		for _, candidate := range candidates {
 			data, ok, err := c.ReadFile(candidate)
 			if err != nil {

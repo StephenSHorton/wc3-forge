@@ -8,9 +8,10 @@
 //     blended by depth-above-ground)
 //
 // Texture animation: Water.slk's `texfile` column points at a base path;
-// individual frames live at `<texfile>00.blp` … `<texfile><NN>.blp` where
-// NN ranges over `num_textures`. Each frame is a 128×128 BLP (or DDS in
-// Reforged CASC; the asset-handler's BLP↔DDS fallback covers either).
+// individual frames live at `<texfile>00.dds` (Classic: `.blp` via the
+// asset-handler sibling swap) where the index ranges over `num_textures`.
+// Each frame is 128×128. CASC lookups also try the map's
+// `_tilesets/<letter>.w3mod:` mount (Reforged 2.0.3+).
 // `texrate` is the playback rate in frames per second; current_frame =
 // floor(time_seconds * texrate) % numTextures.
 //
@@ -188,10 +189,16 @@ export async function buildWater(
     }
   }
 
-  // uint16 indices cap at 65535 corners (~256×256 maps). Out of scope = no water.
+  // Shared-corner mesh: one vertex per grid corner. Maps at/over ~256 tiles
+  // have W*H > 65535, so we promote to uint32 indices the same way terrain
+  // and pathing do. The previous uint16-only path silently returned null
+  // here, which is why the Terrain Cell inspector could say "Has water: yes"
+  // on a latest-Reforged large map while the viewport drew none.
   const N = W * H
-  if (N > 65535) {
-    flog(`[water] vertex count ${N} exceeds 16-bit index limit; water disabled`)
+  const need32 = N > 65535
+  const uintExt = need32 ? gl.getExtension('OES_element_index_uint') : null
+  if (need32 && !uintExt) {
+    flog(`[water] vertex count ${N} exceeds 16-bit index limit and OES_element_index_uint is missing; water disabled`)
     return null
   }
 
@@ -209,7 +216,10 @@ export async function buildWater(
   }
   if (cellCount === 0) return null
 
-  const indices = new Uint16Array(cellCount * 6)
+  const indices: Uint16Array | Uint32Array = need32
+    ? new Uint32Array(cellCount * 6)
+    : new Uint16Array(cellCount * 6)
+  const indexType = need32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT
   let idxPos = 0
   for (let j = 0; j < H - 1; j++) {
     for (let i = 0; i < W - 1; i++) {
@@ -243,10 +253,14 @@ export async function buildWater(
   // handler's BLP↔DDS extension fallback covers Reforged-only-DDS installs.
   const frameTextures: (WebGLTexture | null)[] = []
   if (t.water.texture_file && t.water.num_textures > 0) {
+    // Reforged CASC ships these as DDS (no BLP). Request .dds the way
+    // terrain.ts does; the asset handler still sibling-swaps to .blp
+    // for Classic installs. Water.slk's texfile uses backslashes.
+    const stem = t.water.texture_file.replace(/\\/g, '/')
     const promises: Promise<WebGLTexture | null>[] = []
     for (let i = 0; i < t.water.num_textures; i++) {
       const num = i.toString().padStart(2, '0')
-      const path = `${t.water.texture_file}${num}.blp`
+      const path = `${stem}${num}.dds`
       promises.push(
         viewer.load(path, pathSolver).then((res: any) => {
           if (!res) return null
@@ -302,7 +316,7 @@ export async function buildWater(
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
       gl.disable(gl.CULL_FACE)
 
-      gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0)
+      gl.drawElements(gl.TRIANGLES, indices.length, indexType, 0)
 
       gl.depthMask(true)
       gl.disable(gl.BLEND)
