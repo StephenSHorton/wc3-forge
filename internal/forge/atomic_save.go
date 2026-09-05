@@ -433,8 +433,9 @@ func commitFolderWrites(fs folderSource, writes []pendingWrite) (err error) {
 
 // resolve maps a source-relative name to an absolute on-disk path under the
 // folder root, applying the same path-traversal defense folderSource.write used
-// before the batch-commit refactor. Factored out so both the single-file write
-// path and the batch-commit path validate names identically.
+// before the batch-commit refactor. Shared by write, read, delete, and the
+// batch-commit path so WC3 backslash names (`war3mapImported\foo.blp`) resolve
+// to a real subdirectory on POSIX, not a filename containing a backslash.
 //
 // We normalize Windows-style backslashes to forward slashes before cleaning so
 // the same code rejects `C:\Windows\…` and `subdir\..\..\evil` on both macOS

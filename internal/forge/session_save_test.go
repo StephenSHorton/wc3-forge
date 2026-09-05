@@ -787,7 +787,13 @@ func TestFolderSource_WriteSafety(t *testing.T) {
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			if err := fs.write(name, []byte("x")); err == nil {
-				t.Errorf("expected error for path %q, got nil", name)
+				t.Errorf("write: expected error for path %q, got nil", name)
+			}
+			if _, _, err := fs.read(name); err == nil {
+				t.Errorf("read: expected error for path %q, got nil", name)
+			}
+			if err := fs.delete(name); err == nil {
+				t.Errorf("delete: expected error for path %q, got nil", name)
 			}
 		})
 	}
@@ -797,6 +803,38 @@ func TestFolderSource_WriteSafety(t *testing.T) {
 	}
 	if !bytes.Equal(mustRead(t, filepath.Join(tmp, "war3mapUnits.doo")), []byte("x")) {
 		t.Errorf("write did not produce expected contents")
+	}
+}
+
+// TestFolderSource_BackslashPathRoundTrip is the Darwin CI regression: WC3
+// archive paths use backslashes, write() already FromSlash'd them into a real
+// subdirectory, but read()/delete() used filepath.Join on the raw name.
+// On POSIX that looks for a single file whose name contains `\`, so
+// AddImport/ImportModel succeeded and ListImports/Rename/ReadFile reported
+// the file missing.
+func TestFolderSource_BackslashPathRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	fs := folderSource{root: tmp}
+	name := `war3mapImported\foo.txt`
+	if err := fs.write(name, []byte("hi")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	want := filepath.Join(tmp, "war3mapImported", "foo.txt")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected OS path %s after write: %v", want, err)
+	}
+	got, ok, err := fs.read(name)
+	if err != nil || !ok {
+		t.Fatalf("read(%q): ok=%v err=%v (POSIX Join-without-FromSlash looks for a literal-backslash filename)", name, ok, err)
+	}
+	if string(got) != "hi" {
+		t.Fatalf("read bytes = %q, want %q", got, "hi")
+	}
+	if err := fs.delete(name); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("delete left file at %s: %v", want, err)
 	}
 }
 

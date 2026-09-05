@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **CI (Windows catalog-sync + macOS Import Manager).** Two pre-existing
+  Darwin/Windows CI failures, unrelated to #34:
+  - The MCP catalog drift check used `git diff --exit-status`, which is
+    not a Git option. Git for Windows errored "invalid option" and the
+    step then reported a false catalog drift. The flag is `--exit-code`.
+  - Folder-backed `ReadFile` / `delete` joined WC3 backslash paths
+    (`war3mapImported\foo.blp`) as a single filename on POSIX, so add
+    succeeded (write already normalized) but list/rename/reopen said the
+    file was missing. `folderSource` read/write/delete now all go through
+    `resolve()`.
 - **`f` types in the Trigger Editor script pane.** The Frame Selection
   hotkey (`f`) no longer swallows the key while a custom-script (or any
   Monaco) editor is focused, so you can type `function` instead of
