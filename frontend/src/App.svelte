@@ -54,6 +54,7 @@
   import DiagnosticsOverlay from './DiagnosticsOverlay.svelte'
   import { showToast } from './toast'
   import { flog, flogError, flogDebug, setLogLevel } from './debuglog'
+  import { isTypingTarget } from './typing-target'
   import { registerDiag } from './diag-registry'
   import { loadIconURL } from './icon-loader'
   import { TEAM_COLORS_RGB, PLAYER_COLOR_NAMES, neutralName } from './sloc-markers'
@@ -1442,7 +1443,18 @@
     }
   })
 
+  // True while a modal editor/dialog owns the keyboard. Viewport hotkeys
+  // (frame-selected, minimap, gizmo, Tab mode cycle, Delete selection) must
+  // not fire through these — the Trigger Editor's Monaco pane in particular
+  // is not a <textarea>, so a tagName gate alone is not enough (#34).
+  function editorDialogOpen(): boolean {
+    return showObjectEditor || showTriggerEditor || showConvertToLua || showMapInfoEditor
+      || showNewMap || showMcpSetup || showUpdateDialog || showWC3InstallDialog || quitGuardOpen
+  }
+
   function onGlobalKeyDown(e: KeyboardEvent) {
+    const typing = isTypingTarget(e.target)
+    const dialogOpen = editorDialogOpen()
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       void doSave()
@@ -1452,14 +1464,12 @@
     // bind Ctrl+Y as a Redo alias — the user explicitly asked for
     // Shift+Z-only after preferring it during evaluation.
     //
-    // Skip when an input/textarea has focus so the browser's text-undo keeps
-    // working. Same skip pattern the WASD-pan hotkeys use. Registered with
-    // capture=true (see addEventListener call) so we run BEFORE WebView2's
-    // own editing shortcuts grab Ctrl+Z/Y from the page.
+    // Skip when a text field / Monaco editor has focus so the editor's own
+    // undo keeps working. Same skip pattern the WASD-pan hotkeys use.
+    // Registered with capture=true (see addEventListener call) so we run
+    // BEFORE WebView2's own editing shortcuts grab Ctrl+Z/Y from the page.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
+      if (typing) return
       e.preventDefault()
       e.stopPropagation()
       flogDebug(`[hotkey] ${e.shiftKey ? 'redo' : 'undo'} canUndo=${canUndo} canRedo=${canRedo}`)
@@ -1482,24 +1492,20 @@
       toggleBridgeConsole()
     }
     // Minimap toggle hotkey: bare 'M'. No modifiers — matches the WC3 in-game
-    // convention. Ignore when an input/textarea has focus so position-edit
-    // typing doesn't accidentally hide the minimap, and ignore when modifiers
-    // are held (so Ctrl+M / Alt+M stay free for future shortcuts).
+    // convention. Ignore when typing or when an editor dialog is open, and
+    // ignore when modifiers are held (so Ctrl+M / Alt+M stay free).
     if ((e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
+      if (typing || dialogOpen) return
       e.preventDefault()
       toggleMinimap()
     }
     // Gizmo mode hotkeys: 1=move, 2=rotate, 3=scale. (W/E/R were the
     // original Blender-style bindings; dropped per user preference for
-    // the number-row form.) Bare keys only; ignore when typing in an input.
+    // the number-row form.) Bare keys only; ignore when typing in an input
+    // or when an editor dialog is open.
     if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey
         && (e.key === '1' || e.key === '2' || e.key === '3')) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
+      if (typing || dialogOpen) return
       const next: 'move' | 'rotate' | 'scale' =
         e.key === '1' ? 'move' : e.key === '2' ? 'rotate' : 'scale'
       e.preventDefault()
@@ -1507,12 +1513,11 @@
     }
     // Editor mode cycle: Tab → Doodad → Terrain → Region → (wrap); Shift+Tab
     // reverses (Blender-style mode toggling). Skip while a text field / select
-    // / contenteditable has focus so Tab keeps doing normal focus traversal
-    // there, and only when a map is loaded (modes are inert without one).
+    // / Monaco has focus so Tab keeps doing normal focus traversal there,
+    // skip while an editor dialog is open, and only when a map is loaded
+    // (modes are inert without one).
     if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tgt?.isContentEditable) return
+      if (typing || dialogOpen) return
       if (!status.loaded) return
       e.preventDefault()
       const order: EditorMode[] = ['doodad', 'terrain', 'region']
@@ -1552,9 +1557,7 @@
     // overlay listing every binding. Skip while typing so '?' still types into
     // a field. Escape (handled in the overlay) also dismisses it.
     if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
+      if (typing) return
       e.preventDefault()
       showShortcuts = !showShortcuts
     }
@@ -1565,12 +1568,11 @@
     }
     // Frame-selected hotkey: bare 'f'. Centers the camera on the current
     // selection's centroid and zooms in to fit. Matches the Blender / Maya
-    // / Unity muscle memory. Same input-focus gate as 'M' so typing in the
-    // Properties panel doesn't yank the camera away.
+    // / Unity muscle memory. Skip while typing (including Monaco custom
+    // scripts — #34) and while an editor dialog is open so the key reaches
+    // the focused editor instead of yanking the camera.
     if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
+      if (typing || dialogOpen) return
       e.preventDefault()
       scene?.focusSelection()
     }
@@ -1580,11 +1582,7 @@
     // Trigger Editor deletes a node, Object Editor a custom row, etc.).
     // Backspace is an alias for keyboards/laptops without a dedicated Delete.
     if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-      const tgt = e.target as HTMLElement | null
-      const tagName = tgt?.tagName?.toLowerCase()
-      if (tagName === 'input' || tagName === 'textarea' || tgt?.isContentEditable) return
-      if (showObjectEditor || showTriggerEditor || showConvertToLua || showMapInfoEditor
-          || showNewMap || showMcpSetup || showUpdateDialog || showWC3InstallDialog || quitGuardOpen) return
+      if (typing || dialogOpen) return
       if (selectionItems.length === 0) return
       e.preventDefault()
       void deleteSelection()

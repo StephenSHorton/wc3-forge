@@ -25,6 +25,7 @@
 // camera in motion.
 
 import { registerDiag } from './diag-registry'
+import { isTypingTarget } from './typing-target'
 
 const PITCH_MIN = 0.18  // ~10°, prevents the floor-eye view
 const PITCH_MAX = 1.45  // ~83°, prevents flipping past straight down
@@ -46,7 +47,7 @@ const DEFAULT_PITCH = Math.PI / 3
 // ---- Stuck-pan-key watchdog (diagnostics) ----
 //
 // The pan keys (WASD/arrows) drive the camera from window-level keydown
-// listeners. The classic failure mode — already fixed via typingInField() +
+// listeners. The classic failure mode — already fixed via isTypingTarget() +
 // onBlur() — was a held pan key continuing to pan while the window had no
 // focus (e.g. WASD typed into a search box that then lost focus, or an
 // alt-tab that swallowed the keyup). This watchdog re-surfaces that exact
@@ -255,19 +256,13 @@ export function createCamera(canvas: HTMLCanvasElement, viewerCamera: any): RTSC
   }
   // True when a text-entry element has focus, so the WASD/arrow pan keys don't
   // fire while the user is typing into a field (e.g. the doodad palette's
-  // search box, the Map Info name field, any inline editor). Without this,
-  // typing a doodad name like "wall" or "stand" pans the camera thousands of
-  // units into the void — every w/a/s/d keypress is also a pan command, since
-  // these listeners are window-level. Mirrors the input-focus skip the global
-  // hotkeys in App.svelte already use.
-  function typingInField(): boolean {
-    const a = document.activeElement as HTMLElement | null
-    if (!a) return false
-    const tag = a.tagName
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable
-  }
+  // search box, the Map Info name field, a custom-script Monaco pane). Without
+  // this, typing a doodad name like "wall" or "stand" pans the camera thousands
+  // of units into the void — every w/a/s/d keypress is also a pan command,
+  // since these listeners are window-level. Shared with App.svelte hotkeys
+  // via isTypingTarget (covers Monaco's EditContext DIV, not just <textarea>).
   function onKeyDown(e: KeyboardEvent) {
-    if (typingInField()) return
+    if (isTypingTarget(e.target)) return
     keysDown.add(e.key.toLowerCase())
   }
   function onKeyUp(e: KeyboardEvent) { keysDown.delete(e.key.toLowerCase()) }
