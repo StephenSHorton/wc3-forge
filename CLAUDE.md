@@ -28,16 +28,25 @@ Run the existing binary directly (useful when you don't need a rebuild) — repl
 <bin> --camera x,y,z,distance             # pin startup camera for verification
 ```
 
-Tests + checks (mirror the CI flow in `.github/workflows/ci.yml`):
+### Checks (run locally - no CI)
+
+There is no CI on PRs or pushes (removed to save GitHub Actions minutes). Before opening or merging a PR, or pushing to `main`, run these locally and make sure they pass:
 
 ```
+cd frontend && npm ci && npm run check && npm run build && cd ..   # typecheck + build (go:embed needs frontend/dist)
+cd mcp && npm ci && npm run gen:tools && cd .. && git diff --exit-code internal/mcpserver/tools.json   # MCP catalog must not drift from mcp/src/tools.ts
 go vet ./...
 go test ./...
+go build ./...
+```
+
+On macOS, also run the race-detector suite: `CGO_ENABLED=1 go test -race ./...` (proves the GUI + MCP-bridge concurrent-writer safety, e.g. `TestSaveConcurrentMutation_NoRace`). On a memory-constrained Windows box, `GOFLAGS=-p=2` avoids errno=1455 compile OOMs.
+
+Narrower runs while iterating:
+
+```
 go test ./internal/forge/...             # single package
 go test ./internal/forge -run TestSessionSaveRoundTrip   # single test
-cd frontend && npm ci                    # first-time + after package.json changes
-cd frontend && npm run check             # svelte-check (typecheck)
-cd frontend && npm run build             # vite build (also runs as part of `wails build`)
 ```
 
 The `cmd/dumpw3e` parser-replay tool exists for cross-checking renderer divergences against HiveWE — `go run ./cmd/dumpw3e <map-path>`.
