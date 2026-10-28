@@ -34,7 +34,7 @@ type catalogTool struct {
 //     a catalog entry.
 //
 // This is the guard that a handler added to RegisterAll without a tools.ts entry
-// (or a tools.ts tool with no handler) fails CI. The CI step (ci.yml) separately
+// (or a tools.ts tool with no handler) fails `go test`. The local gen:tools drift check (CLAUDE.md "Checks") separately
 // catches "tools.ts edited but tools.json not regenerated".
 func TestToolsCatalogParity(t *testing.T) {
 	// Registered methods = forge.RegisterAll + the package-main extras.

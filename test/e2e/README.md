@@ -7,7 +7,7 @@ testing.
 
 | Layer | What it drives | When it runs | Covers |
 |---|---|---|---|
-| **Go CI suite** — `internal/forge/e2e_scenarios_test.go` | the bridge **in-process** (handlers → `Session` → disk) | every PR, via the existing `go test ./...` step in `.github/workflows/ci.yml` | the CASC-free surfaces: map lifecycle + save-safety, terrain, units, start locations, regions, imports, history (undo/redo/groups), view, gameplay constants, diagnostics |
+| **Go suite** — `internal/forge/e2e_scenarios_test.go` | the bridge **in-process** (handlers → `Session` → disk) | locally before every PR, via `go test ./...` (see "Checks (run locally - no CI)" in `CLAUDE.md`; there is no PR CI) | the CASC-free surfaces: map lifecycle + save-safety, terrain, units, start locations, regions, imports, history (undo/redo/groups), view, gameplay constants, diagnostics |
 | **PS release runner** — `test/e2e/run_release.ps1` | the **actual built `wc3-forge.exe`** over a headless bridge | manually, before cutting a release (on a machine with Warcraft III installed) | everything the Go suite covers **plus** the CASC-dependent Object Editor (all 7 kinds) which a bare CI runner can't load |
 
 The split mirrors the "ci" vs "casc" tiering: the Go suite is the always-on
@@ -16,7 +16,7 @@ need the stock SLK base data from a CASC install.
 
 ## Running it
 
-### Go suite (CI gate — no setup)
+### Go suite (local pre-PR gate — no setup)
 
 ```bash
 go test ./internal/forge/ -run '^TestE2E_' -v   # just the e2e scenarios
@@ -106,5 +106,5 @@ silently — not bugs, but worth knowing when reading results:
 into `.github/workflows/release.yml` as a post-`wails build` smoke gate (the
 binary is already built there; no WC3 needed). It's left opt-in because it
 launches the GUI binary in `--headless` mode on the runner — validate that path
-on your CI image before making it a hard gate. The Go suite already gates every
-PR in CI.
+on your CI image before making it a hard gate. The Go suite is the local pre-PR
+gate (there is no PR CI).

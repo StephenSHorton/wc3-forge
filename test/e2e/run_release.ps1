@@ -5,8 +5,8 @@
 
 .DESCRIPTION
   This is the "artifact runner" half of the test suite (the other half is the Go
-  in-process suite in internal/forge/e2e_scenarios_test.go, which runs in CI on
-  every PR). Run this before cutting a release to validate the real .exe — it
+  in-process suite in internal/forge/e2e_scenarios_test.go, which is run locally
+  before every PR; there is no PR CI). Run this before cutting a release to validate the real .exe — it
   exercises the same surfaces over the wire AND the CASC-dependent Object Editor
   that the bare-CI Go suite can't reach.
 
